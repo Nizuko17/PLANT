@@ -1,0 +1,33 @@
+
+> plant-next@0.1.0 build
+> next build
+
+Ôû▓ Next.js 16.1.7 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+
+> Build error occurred
+Error: Turbopack build failed with 1 errors:
+./components/ThemeProvider.js:4:1
+Module not found: Can't resolve 'lucide'
+  2 |
+  3 | import { useEffect, useState } from 'react';
+> 4 | import { createIcons, Sun, Moon, Droplets, Thermometer, Activity, Smartphone, Leaf, Waves, Cpu, Check, X, User, Heart, Recycle, Lightbulb, Menu, ChevronDown } from 'lucide';
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  5 |
+  6 | export default function ThemeProvider({ children }) {
+  7 |   const [theme, setTheme] = useState('light');
+
+
+
+Import trace:
+  Server Component:
+    ./components/ThemeProvider.js
+    ./app/layout.js
+
+https://nextjs.org/docs/messages/module-not-found
+
+
+    at <unknown> (./components/ThemeProvider.js:4:1)
+    at <unknown> (https://nextjs.org/docs/messages/module-not-found)

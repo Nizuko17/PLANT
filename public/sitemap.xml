@@ -13,15 +13,63 @@
         <priority>0.9</priority>
     </url>
     <url>
+        <loc>https://www.plant.it/accessori</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>weekly</changefreq>
+        <priority>0.8</priority>
+    </url>
+    <url>
         <loc>https://www.plant.it/account</loc>
         <lastmod>2026-03-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.7</priority>
     </url>
     <url>
+        <loc>https://www.plant.it/account/profilo</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>monthly</changefreq>
+        <priority>0.5</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/ordini</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>monthly</changefreq>
+        <priority>0.5</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/preferiti</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>monthly</changefreq>
+        <priority>0.5</priority>
+    </url>
+    <url>
         <loc>https://www.plant.it/chi-siamo</loc>
         <lastmod>2026-03-17</lastmod>
         <changefreq>monthly</changefreq>
         <priority>0.8</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/lavora-con-noi</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>monthly</changefreq>
+        <priority>0.6</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/sostenibilita</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>monthly</changefreq>
+        <priority>0.7</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/privacy</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>yearly</changefreq>
+        <priority>0.4</priority>
+    </url>
+    <url>
+        <loc>https://www.plant.it/termini</loc>
+        <lastmod>2026-03-17</lastmod>
+        <changefreq>yearly</changefreq>
+        <priority>0.4</priority>
     </url>
 </urlset>

@@ -347,3 +347,35 @@ body.dark-mode .theme-icon-light { display: none; }
     .mobile-menu-btn { display: block; }
     .footer-grid { grid-template-columns: 1fr; gap: 20px; }
 }
+
+/* ===== DATE PICKER STYLED ===== */
+.date-picker-styled {
+    position: relative;
+    color-scheme: light;
+}
+.date-picker-styled:focus {
+    outline: none;
+    border-color: var(--accent-green) !important;
+    box-shadow: 0 0 0 3px rgba(167, 196, 170, 0.2);
+}
+.date-picker-styled:hover {
+    border-color: var(--accent-green) !important;
+}
+.date-picker-styled::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.6;
+    filter: none;
+    padding: 4px;
+    border-radius: 4px;
+    transition: opacity 0.2s, background 0.2s;
+}
+.date-picker-styled::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+    background: var(--accent-green-light);
+}
+body.dark-mode .date-picker-styled {
+    color-scheme: dark;
+}
+body.dark-mode .date-picker-styled::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+}

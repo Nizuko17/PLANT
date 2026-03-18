@@ -34,13 +34,28 @@ export async function POST(request) {
        return NextResponse.json({ error: 'Prodotto non trovato' }, { status: 404 });
     }
 
-    // 4. Inserimento nel DB
+    // 4. PREVENZIONE DUPLICATI: Verifica se il MAC esiste già per questo utente
+    if (mac_address) {
+      const { data: existingDevice } = await supabase
+        .from('devices')
+        .select('id')
+        .eq('user_id', session.user.id)
+        .eq('mac_address', mac_address)
+        .maybeSingle();
+
+      if (existingDevice) {
+        // Se esiste già, consideriamo l'operazione un successo (idempotenza) o aggiorniamo il nome
+        return NextResponse.json({ success: true, message: 'Dispositivo già registrato' });
+      }
+    }
+
+    // 5. Inserimento nel DB
     const { error } = await supabase.from('devices').insert([{
       user_id: session.user.id,
       name: name.replace(/<[^>]*>?/gm, ''), // XSS protection
       product_id: parseInt(product_id),
       mac_address: mac_address || null,
-      status_id: 1, // Active by default or Pending?
+      status_id: 1, 
     }]);
 
     if (error) {

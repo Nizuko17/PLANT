@@ -3,7 +3,7 @@
 import FadeIn from '@/components/FadeIn';
 import { createClient } from '@/utils/supabase/client';
 import { useState, useEffect } from 'react';
-import { User, Wifi, WifiOff, Plus, Droplets, Wind, Leaf, Package, Heart, LogOut, Save, Edit3, X } from 'lucide-react';
+import { User, Wifi, WifiOff, Droplets, Wind, Leaf, Package, Heart, LogOut, Save, Edit3, X, Globe, Sprout, ArrowRight, Thermometer } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { cachedFetch, invalidateCache, clearAllCache } from '@/hooks/useCache';
 
@@ -22,11 +22,7 @@ export default function Profilo() {
     first_name: '', last_name: '', birth_date: '', address: '', phone: ''
   });
 
-  // Form nuovo dispositivo
-  const [showAddDevice, setShowAddDevice] = useState(false);
-  const [deviceForm, setDeviceForm] = useState({ name: '', product_id: '', mac_address: '' });
   const [products, setProducts] = useState([]);
-  const [savingDevice, setSavingDevice] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -114,38 +110,7 @@ export default function Profilo() {
     setSaving(false);
   };
 
-  const handleAddDevice = async (e) => {
-    e.preventDefault();
-    if (!deviceForm.name || !deviceForm.product_id) return;
 
-    setSavingDevice(true);
-    
-    // Salvataggio tramite API Backend
-    const res = await fetch('/api/devices/add', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(deviceForm)
-    });
-
-    const result = await res.json();
-
-    if (!result.error) {
-      setDeviceForm({ name: '', product_id: '', mac_address: '' });
-      setShowAddDevice(false);
-      
-      // Ricarica dispositivi
-      const { data: { session } } = await supabase.auth.getSession();
-      const { data: devs } = await supabase
-        .from('devices')
-        .select('*, product:products(name, slug), device_status:status(type)')
-        .eq('user_id', session.user.id);
-      setDevices(devs || []);
-      invalidateCache('devices'); // Invalida la cache dei dispositivi
-    } else {
-      alert(result.error || 'Errore nel salvataggio del dispositivo.');
-    }
-    setSavingDevice(false);
-  };
 
   const handleLogout = async () => {
     clearAllCache(); // Pulisce tutta la cache al logout
@@ -320,122 +285,110 @@ export default function Profilo() {
           {/* Sezione Dispositivi */}
           <FadeIn>
             <div className="account-card" style={{ padding: '30px', marginBottom: '25px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '24px' }}>
                 <h3 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Leaf size={20} color="var(--accent-green)" /> I Miei Dispositivi
+                  <Sprout size={20} color="var(--accent-green)" /> I Miei Dispositivi
                 </h3>
                 <button
-                  onClick={() => setShowAddDevice(!showAddDevice)}
+                  onClick={() => router.push('/account/dispositivi/ricerca')}
                   className="btn btn-primary"
-                  style={{ padding: '8px 16px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  style={{ padding: '8px 18px', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '8px', borderRadius: '12px' }}
                 >
-                  <Plus size={16} /> Collega Vaso
+                  <Wifi size={16} /> Cerca Dispositivo
                 </button>
               </div>
 
-              {showAddDevice && (
-                <form onSubmit={handleAddDevice} style={{
-                  padding: '20px', background: 'var(--bg-alt)', borderRadius: '12px', marginBottom: '20px',
-                  display: 'flex', flexDirection: 'column', gap: '12px'
-                }}>
-                  <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                    <input
-                      type="text" placeholder="Nome personalizzato (es. Vaso Salotto)"
-                      value={deviceForm.name} onChange={e => setDeviceForm({ ...deviceForm, name: e.target.value })}
-                      required
-                      style={{ flex: '1 1 200px', padding: '10px 14px', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
-                    />
-                    <select
-                      value={deviceForm.product_id} onChange={e => setDeviceForm({ ...deviceForm, product_id: e.target.value })}
-                      required
-                      style={{ flex: '1 1 150px', padding: '10px 14px', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
-                    >
-                      <option value="">Seleziona Modello</option>
-                      {products.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                    <input
-                      type="text" placeholder="MAC Address (opzionale)"
-                      value={deviceForm.mac_address} onChange={e => setDeviceForm({ ...deviceForm, mac_address: e.target.value })}
-                      style={{ flex: '1 1 180px', padding: '10px 14px', border: '1px solid var(--border-color)', borderRadius: '8px', background: 'var(--input-bg)', color: 'var(--text-primary)' }}
-                    />
-                  </div>
-                  <div style={{ display: 'flex', gap: '10px' }}>
-                    <button type="submit" className="btn btn-primary" disabled={savingDevice} style={{ padding: '10px 20px' }}>
-                      {savingDevice ? 'Salvataggio...' : 'Registra Dispositivo'}
-                    </button>
-                    <button type="button" onClick={() => setShowAddDevice(false)} className="btn btn-secondary" style={{ padding: '10px 20px' }}>
-                      Annulla
-                    </button>
-                  </div>
-                </form>
-              )}
-
               {devices.length === 0 ? (
-                <p style={{ color: 'var(--text-secondary)', textAlign: 'center', padding: '30px 0' }}>
-                  Nessun dispositivo collegato. Registra il tuo primo vaso PLANT!
-                </p>
+                <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-secondary)' }}>
+                  <Sprout size={48} style={{ marginBottom: '16px', opacity: 0.3 }} />
+                  <p style={{ margin: 0, fontWeight: '500' }}>Nessun dispositivo collegato.</p>
+                  <p style={{ margin: '8px 0 20px', fontSize: '0.88rem' }}>Cerca il tuo vaso PLANT sulla rete WiFi.</p>
+                  <button onClick={() => router.push('/account/dispositivi/ricerca')} className="btn btn-primary" style={{ padding: '10px 24px', fontSize: '0.9rem' }}>
+                    <Wifi size={16} /> Inizia Ricerca
+                  </button>
+                </div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '15px' }}>
-                  {devices.map(dev => (
-                    <div key={dev.id} className="account-card" style={{
-                      padding: '20px', border: '1px solid var(--border-color)', borderRadius: '16px',
-                      display: 'flex', flexDirection: 'column', gap: '15px', position: 'relative',
-                      overflow: 'hidden', background: 'var(--card-bg)'
-                    }}>
-                      {/* Status Header */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <h4 style={{ margin: 0, fontSize: '1.1rem' }}>{dev.name}</h4>
-                          <span style={{ fontSize: '0.8rem', color: '#86868b' }}>{dev.product?.name || 'Vaso Smart'}</span>
-                        </div>
-                        <div style={{ 
-                          padding: '6px', borderRadius: '50%', 
-                          background: dev.device_status?.type === 'Active' ? 'var(--accent-green-light)' : 'var(--bg-alt)',
-                          color: dev.device_status?.type === 'Active' ? 'var(--accent-green)' : 'var(--text-secondary)'
-                        }}>
-                          {dev.device_status?.type === 'Active' ? <Wifi size={18} /> : <WifiOff size={18} />}
-                        </div>
-                      </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))', gap: '16px' }}>
+                  {devices.map(dev => {
+                    const isActive = dev.device_status?.type === 'Active';
+                    return (
+                      <div key={dev.id} style={{
+                        border: `1px solid ${isActive ? 'var(--accent-green)' : 'var(--border-color)'}`,
+                        borderRadius: '20px', padding: '20px',
+                        background: 'var(--card-bg)', position: 'relative',
+                        overflow: 'hidden', transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+                        display: 'flex', flexDirection: 'column', gap: '16px'
+                      }}
+                        onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-3px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0,0,0,0.08)'; }}
+                        onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'none'; }}
+                      >
+                        {/* Strip superiore */}
+                        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '3px', background: isActive ? 'var(--accent-green)' : 'var(--border-color)' }} />
 
-                      {/* Mockup Live Stats */}
-                      <div style={{ display: 'flex', gap: '15px', padding: '10px 0' }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', marginBottom: '5px', fontWeight: '600' }}>
-                            <span>Umidità</span>
-                            <span style={{ color: 'var(--accent-green)' }}>42%</span>
+                        {/* Header */}
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px' }}>
+                          <div style={{
+                            width: '50px', height: '50px', borderRadius: '14px', flexShrink: 0,
+                            background: isActive ? 'var(--accent-green-light)' : 'var(--bg-alt)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            border: `1px solid ${isActive ? 'var(--accent-green)' : 'var(--border-color)'}`
+                          }}>
+                            <Sprout size={26} color={isActive ? 'var(--accent-green)' : 'var(--text-secondary)'} />
                           </div>
-                          <div style={{ height: '6px', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
-                            <div style={{ width: '42%', height: '100%', background: 'var(--accent-green)', borderRadius: '3px' }}></div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <h4 style={{ margin: '0 0 3px', fontSize: '1.05rem', fontWeight: '700', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dev.name}</h4>
+                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{dev.product?.name || 'PLANT Smart Vase'}</span>
+                          </div>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '5px',
+                            padding: '4px 10px', borderRadius: '20px', fontSize: '0.72rem', fontWeight: '700', flexShrink: 0,
+                            background: isActive ? 'var(--accent-green-light)' : 'var(--bg-alt)',
+                            color: isActive ? 'var(--accent-green)' : 'var(--text-secondary)'
+                          }}>
+                            {isActive ? <Wifi size={11} /> : <WifiOff size={11} />}
+                            {isActive ? 'Online' : 'Offline'}
+                          </span>
+                        </div>
+
+                        {/* Stats rapide */}
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                          <div style={{ padding: '10px 12px', background: 'var(--bg-alt)', borderRadius: '10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                              <Droplets size={13} color="#3b82f6" />
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Umidità</span>
+                            </div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>—</div>
+                          </div>
+                          <div style={{ padding: '10px 12px', background: 'var(--bg-alt)', borderRadius: '10px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
+                              <Thermometer size={13} color="#e53e3e" />
+                              <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Temp.</span>
+                            </div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>—</div>
                           </div>
                         </div>
-                        <div style={{ borderLeft: '1px solid var(--border-color)', paddingLeft: '15px' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '2px' }}>Temp.</div>
-                          <div style={{ fontSize: '1.1rem', fontWeight: '700' }}>24°C</div>
+
+                        {/* Footer */}
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <code style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>{dev.mac_address || 'MAC N/D'}</code>
+                          <button
+                            onClick={() => router.push(`/account/dispositivi/${dev.id}`)}
+                            style={{
+                              padding: '7px 14px', fontSize: '0.82rem', fontWeight: '700',
+                              borderRadius: '10px', border: '1px solid var(--accent-green)',
+                              background: 'transparent', color: 'var(--accent-green)',
+                              cursor: 'pointer', transition: 'all 0.2s ease',
+                              display: 'flex', alignItems: 'center', gap: '5px'
+                            }}
+                            onMouseEnter={e => { e.currentTarget.style.background = 'var(--accent-green)'; e.currentTarget.style.color = 'white'; }}
+                            onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--accent-green)'; }}
+                          >
+                            Gestisci <ArrowRight size={13} />
+                          </button>
                         </div>
                       </div>
-
-                      {/* Footer Info */}
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '5px' }}>
-                        <code style={{ fontSize: '0.7rem', color: '#999' }}>{dev.mac_address || '00:00:00:00:00'}</code>
-                        <button style={{ 
-                          padding: '6px 12px', fontSize: '0.8rem', fontWeight: '600', 
-                          borderRadius: '20px', border: '1px solid #eee', background: 'white',
-                          cursor: 'pointer', transition: 'all 0.2s'
-                        }}
-                        onMouseEnter={(e) => e.target.style.background = '#f9f9f9'}
-                        onMouseLeave={(e) => e.target.style.background = 'white'}
-                        >
-                          Gestisci
-                        </button>
-                      </div>
-
-                      {/* Top Accent Strip */}
-                      <div style={{ 
-                        position: 'absolute', top: 0, left: 0, width: '100%', height: '4px',
-                        background: dev.device_status?.type === 'Active' ? 'var(--accent-green)' : '#ddd'
-                      }}></div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>

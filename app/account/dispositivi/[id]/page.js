@@ -7,7 +7,7 @@ import {
   ArrowLeft, Sprout, Wifi, WifiOff, Thermometer, Droplets,
   Bell, BellOff, Power, Monitor, Circle, Save, Edit3, X,
   MapPin, Clock, RefreshCw, AlertTriangle, CheckCircle2, Activity,
-  Navigation, Loader2
+  Navigation, Loader2, Beaker
 } from 'lucide-react';
 import Link from 'next/link';
 import FadeIn from '@/components/FadeIn';
@@ -18,6 +18,7 @@ function getSensorStatus(value, type) {
   if (value === null || value === undefined) return 'unknown';
   if (type === 'temp') return value < 10 ? 'cold' : value > 35 ? 'hot' : 'ok';
   if (type === 'hum') return value < 20 ? 'dry' : value > 80 ? 'wet' : 'ok';
+  if (type === 'ph') return value < 6.0 ? 'acid' : value > 8.0 ? 'basic' : 'ok';
   return 'ok';
 }
 
@@ -27,6 +28,8 @@ const STATUS_COLORS = {
   cold: { bg: '#ebf8ff', color: '#3182ce', label: 'Troppo Freddo' },
   dry: { bg: '#fffaf0', color: '#dd6b20', label: 'Secco' },
   wet: { bg: '#ebf8ff', color: '#3182ce', label: 'Umido' },
+  acid: { bg: '#fff0f0', color: '#e53e3e', label: 'Troppo Acido' },
+  basic: { bg: '#ebf8ff', color: '#3182ce', label: 'Troppo Basico' },
   unknown: { bg: 'var(--bg-alt)', color: 'var(--text-secondary)', label: 'N/D' },
 };
 
@@ -211,14 +214,16 @@ export default function GestioneDispositivo() {
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 4000);
-      const res = await fetch(`http://${ip}/status`, { signal: ctrl.signal, mode: 'cors' });
+      // Endpoint ufficiale: GET /api/data
+      const res = await fetch(`http://${ip}/api/data`, { signal: ctrl.signal, mode: 'cors' });
       clearTimeout(tid);
       const data = await res.json();
       setLiveData(data);
-      setBuzzer(data.buzzer ?? false);
-      setPump(data.pump ?? false);
-      setMonitorOn(data.monitor ?? false);
-      setButtonPressed(data.button ?? false);
+      // Struttura dati dallo schema: data.buzzer.on, data.pump.on, ecc.
+      setBuzzer(data?.buzzer?.on ?? false);
+      setPump(data?.pump?.on ?? false);
+      setMonitorOn(data?.monitor?.on ?? false);
+      setButtonPressed(data?.button?.pressed ?? false);
     } catch { /* dispositivo offline o non raggiungibile */ }
   }, []);
 
@@ -244,18 +249,31 @@ export default function GestioneDispositivo() {
       setEditingSettings(false);
       invalidateCache('devices');
 
-      // Sync orario sul NodeMCU (se IP disponibile)
       if (deviceIp) {
+        // Sync datetime via GET /api/set?target=datetime&... (schema ufficiale)
         try {
           const [h, m] = settingsForm.sync_time.split(':');
           const d = new Date(settingsForm.sync_date);
-          await fetch(`http://${deviceIp}/set-time?h=${h}&m=${m}&day=${d.getDay()}&date=${d.getDate()}&month=${d.getMonth()+1}&year=${d.getFullYear()}`, { mode: 'cors' });
+          const giorni = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
+          const weekday = giorni[d.getDay()];
+          const params = new URLSearchParams({
+            target: 'datetime',
+            year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(),
+            hour: h, minute: m, second: 0, weekday
+          });
+          await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
         } catch { /* silent fail */ }
 
-        // Sync posizione sul NodeMCU
+        // Sync geo via GET /api/set?target=geo&...
         if (settingsForm.latitude && settingsForm.longitude) {
           try {
-            await fetch(`http://${deviceIp}/set-location?lat=${settingsForm.latitude}&lon=${settingsForm.longitude}`, { mode: 'cors' });
+            const params = new URLSearchParams({
+              target: 'geo',
+              lat: settingsForm.latitude,
+              lon: settingsForm.longitude,
+              city: settingsForm.city || ''
+            });
+            await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
           } catch { /* silent fail */ }
         }
       }
@@ -265,12 +283,16 @@ export default function GestioneDispositivo() {
     setSaving(false);
   };
 
-  // ─── Controllo via API NodeMCU ─────────────────────────────────────────────
+  // ─── Controllo via API NodeMCU ─────────────────────────────────────────────  // Controllo via GET /api/set (schema ufficiale NodeMCU)
   const sendCommand = async (cmd, value) => {
     if (!deviceIp) return;
     setSendingCmd(p => ({ ...p, [cmd]: true }));
     try {
-      await fetch(`http://${deviceIp}/${cmd}?value=${value ? 1 : 0}`, { mode: 'cors' });
+      // Pompa ha parametro "on", gli altri usano "value"
+      const params = cmd === 'pump'
+        ? new URLSearchParams({ target: cmd, on: value, speed: 80 })
+        : new URLSearchParams({ target: cmd, value });
+      await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
       switch (cmd) {
         case 'buzzer': setBuzzer(value); break;
         case 'pump': setPump(value); break;
@@ -313,8 +335,16 @@ export default function GestioneDispositivo() {
   );
 
   const isOnline = device?.device_status?.type === 'Active';
-  const temp = liveData?.temperature ?? null;
-  const hum = liveData?.humidity ?? null;
+  // Dati live dalla struttura annidata dello schema: data.temperature.value, data.humidity.value
+  const tempRaw = liveData?.temperature?.value ?? null;
+  const humRaw = liveData?.humidity?.value ?? null;
+  const phRaw = liveData?.ph?.value ?? null;
+  const temp = tempRaw !== null ? parseFloat(tempRaw) : null;
+  const hum = humRaw !== null ? parseFloat(humRaw) : null;
+  const ph = phRaw !== null ? parseFloat(phRaw) : null;
+  const pumpSpeed = liveData?.pump?.speed ?? null;
+  const pumpLastOn = liveData?.pump?.last_on ?? null;
+  const dataAge = liveData?.network?.data_age ?? null;
 
   // Calcola punteggio benessere
   const tempScore = temp !== null ? (temp >= 15 && temp <= 30 ? 100 : temp >= 10 && temp <= 35 ? 65 : 30) : null;
@@ -446,11 +476,40 @@ export default function GestioneDispositivo() {
                   : wellnessScore >= 50 ? '⚠️ Attenzione Richiesta'
                   : '🆘 Intervento Necessario'}
               </div>
-              <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: 0 }}>
+              <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: '0 0 8px' }}>
                 {!deviceIp ? 'Inserisci l\'IP del dispositivo per monitorare i dati live.'
                   : wellnessScore === null ? 'Connessione al dispositivo in corso...'
-                  : `Temperatura ${temp}°C · Umidità ${hum}% · Pollinga ogni 10s`}
+                  : `Temperatura ${temp}°C · Umidità ${hum}% · Aggiornamento ogni 10s`}
               </p>
+              {liveData && (
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                  {liveData.temperature?.status === 'ALLERTA' && (
+                    <span style={{ fontSize: '0.72rem', fontWeight: '700', padding: '3px 8px', borderRadius: '10px', background: '#fef2f2', color: '#e53e3e' }}>
+                      ⚠ Allerta Temperatura
+                    </span>
+                  )}
+                  {liveData.ph?.status !== 'OK' && liveData.ph?.status && (
+                    <span style={{ fontSize: '0.72rem', fontWeight: '700', padding: '3px 8px', borderRadius: '10px', background: '#fef2f2', color: '#e53e3e' }}>
+                      ⚠ pH {liveData.ph.status}
+                    </span>
+                  )}
+                  {pumpLastOn && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', padding: '3px 8px', borderRadius: '10px', background: 'var(--bg-alt)' }}>
+                      💧 Pompa: {pumpLastOn}
+                    </span>
+                  )}
+                  {dataAge !== null && (
+                    <span style={{ fontSize: '0.72rem', color: dataAge > 10 ? '#e53e3e' : 'var(--text-secondary)', padding: '3px 8px', borderRadius: '10px', background: 'var(--bg-alt)' }}>
+                      {dataAge > 10 ? '⚠ Mega offline' : `Mega: ${dataAge}s fa`}
+                    </span>
+                  )}
+                  {liveData.network?.ssid && (
+                    <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', padding: '3px 8px', borderRadius: '10px', background: 'var(--bg-alt)' }}>
+                      📶 {liveData.network.ssid} ({liveData.network.rssi} dBm)
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </FadeIn>
@@ -470,6 +529,8 @@ export default function GestioneDispositivo() {
               extra={temp !== null ? `Soglia: ${device?.settings?.temperature_alert ?? 35}°C` : null} />
             <SensorCard icon={Droplets} title="Umidità" value={hum} unit="%" statusType="hum"
               extra={hum !== null ? `Soglia: ${device?.settings?.humidity_threshold ?? 30}%` : null} />
+            <SensorCard icon={Beaker} title="Livello pH" value={ph} unit="" statusType="ph"
+              extra={ph !== null ? `Range ottimale: 6.0 - 8.0` : null} />
           </div>
         </FadeIn>
 

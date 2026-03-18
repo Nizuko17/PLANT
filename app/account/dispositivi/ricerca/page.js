@@ -4,7 +4,7 @@ import FadeIn from '@/components/FadeIn';
 import { createClient } from '@/utils/supabase/client';
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Wifi, Search, ArrowLeft, Cpu, Globe, Activity, Plus, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Wifi, Search, ArrowLeft, Cpu, Globe, Activity, Plus, CheckCircle2, AlertCircle, ShieldCheck } from 'lucide-react';
 import { invalidateCache } from '@/hooks/useCache';
 import Link from 'next/link';
 
@@ -19,18 +19,23 @@ export default function RicercaDispositivo() {
   const [error, setError] = useState(null);
   const [adding, setAdding] = useState(false);
   const [products, setProducts] = useState([]);
+  const [registeredMacs, setRegisteredMacs] = useState([]);
 
   useEffect(() => {
-    // Carichiamo i modelli di prodotto disponibili
-    async function loadProducts() {
-      const { data } = await supabase
-        .from('products')
-        .select('id, name')
-        .eq('category_id', 1) // Assumiamo categoria 1 = Hardware/Vasi
-        .eq('is_active', true);
-      setProducts(data || []);
+    async function loadData() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      // Carica prodotti e dispositivi già registrati in parallelo
+      const [productsRes, devicesRes] = await Promise.all([
+        supabase.from('products').select('id, name').eq('category_id', 1).eq('is_active', true),
+        supabase.from('devices').select('mac_address').eq('user_id', user.id)
+      ]);
+      setProducts(productsRes.data || []);
+      // Raccogliamo i MAC già associati (normalizzati in minuscolo)
+      setRegisteredMacs((devicesRes.data || []).map(d => (d.mac_address || '').toLowerCase()));
     }
-    loadProducts();
+    loadData();
   }, [supabase]);
 
   // AUTO-DISCOVERY: Cerca pompa.local ogni 10 secondi
@@ -73,15 +78,17 @@ export default function RicercaDispositivo() {
     }
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), isAuto ? 3000 : 5000);
-
+      // Ignora errori di fetch nella dev console sopprimendoli prima di await
       const response = await fetch(target, { 
-        signal: controller.signal,
+        signal: AbortSignal.timeout(isAuto ? 3000 : 5000),
         mode: 'cors',
         headers: { 'Accept': 'application/json' }
+      }).catch(err => {
+        if (isAuto) return null; // Sopprime in console lo spam di "Failed to fetch"
+        throw err;
       });
-      clearTimeout(timeoutId);
+
+      if (!response && isAuto) return;
 
       const rawData = await response.json();
       
@@ -121,7 +128,6 @@ export default function RicercaDispositivo() {
     setAdding(true);
 
     try {
-      // Troviamo il product_id corrispondente al tipo o usiamo il primo disponibile come fallback
       let productId = products.find(p => p.name.includes('Sprout'))?.id || products[0]?.id || 1;
       
       const res = await fetch('/api/devices/add', {
@@ -137,6 +143,8 @@ export default function RicercaDispositivo() {
       const result = await res.json();
       if (result.success) {
         invalidateCache('devices');
+        // Aggiorna la lista dei MAC registrati
+        setRegisteredMacs(prev => [...prev, (foundDevice.mac || '').toLowerCase()]);
         alert('Dispositivo aggiunto con successo!');
         router.push('/account/profilo');
       } else {
@@ -250,11 +258,24 @@ export default function RicercaDispositivo() {
                         <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{foundDevice.device_type}</span>
                       </div>
                     </div>
-                    <div style={{ 
-                      display: 'flex', alignItems: 'center', gap: '6px', 
-                      color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.85rem' 
-                    }}>
-                      <CheckCircle2 size={16} /> Online
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '6px' }}>
+                      <div style={{ 
+                        display: 'flex', alignItems: 'center', gap: '6px', 
+                        color: 'var(--accent-green)', fontWeight: '700', fontSize: '0.85rem' 
+                      }}>
+                        <CheckCircle2 size={16} /> Online
+                      </div>
+                      {/* Badge Già Associato */}
+                      {registeredMacs.includes((foundDevice.mac || '').toLowerCase()) && (
+                        <div style={{
+                          display: 'flex', alignItems: 'center', gap: '6px',
+                          padding: '4px 10px', borderRadius: '20px',
+                          background: '#dbeafe', color: '#1d4ed8',
+                          fontSize: '0.75rem', fontWeight: '700'
+                        }}>
+                          <ShieldCheck size={13} /> Già associato
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -277,15 +298,29 @@ export default function RicercaDispositivo() {
                     </div>
                   </div>
 
-                  <button 
-                    onClick={handleAddDevice}
-                    disabled={adding}
-                    className="btn btn-primary btn-full"
-                    style={{ padding: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}
-                  >
-                    {adding ? <Activity className="spin" size={18} /> : <Plus size={18} />}
-                    {adding ? 'Registrazione in corso...' : 'Aggiungi al mio Profilo'}
-                  </button>
+                  {registeredMacs.includes((foundDevice.mac || '').toLowerCase()) ? (
+                    <div style={{
+                      padding: '16px', borderRadius: '12px', background: '#eff6ff',
+                      border: '1px solid #bfdbfe', color: '#1e40af',
+                      display: 'flex', gap: '12px', alignItems: 'center', fontSize: '0.9rem'
+                    }}>
+                      <ShieldCheck size={20} style={{ flexShrink: 0 }} />
+                      <div>
+                        <strong>Dispositivo già registrato</strong><br/>
+                        <span style={{ fontSize: '0.82rem', opacity: 0.8 }}>Questo dispositivo è già associato al tuo account. Puoi gestirlo dalla tua pagina profilo.</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={handleAddDevice}
+                      disabled={adding}
+                      className="btn btn-primary btn-full"
+                      style={{ padding: '15px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px' }}
+                    >
+                      {adding ? <Activity className="spin" size={18} /> : <Plus size={18} />}
+                      {adding ? 'Registrazione in corso...' : 'Aggiungi al mio Profilo'}
+                    </button>
+                  )}
                 </div>
               </FadeIn>
             )}

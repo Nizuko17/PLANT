@@ -110,6 +110,7 @@ export default function Footer() {
               <li><Link href="/chi-siamo">Chi siamo</Link></li>
               <li><Link href="/lavora-con-noi">Lavora con noi</Link></li>
               <li><Link href="/sostenibilita">Sostenibilità</Link></li>
+              <li><Link href="/schema-tecnico">Schema Tecnico</Link></li>
             </ul>
           </div>
           <div className="footer-col">

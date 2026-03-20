@@ -123,11 +123,12 @@ export default function RicercaDispositivo() {
         setFoundDevice(data);
         if (isAuto) setIpAddress(targetInput); // Se trovato in auto, riempiamo il campo
       } else if (!isAuto) {
-        throw new Error('Dati ricevuti non validi o formato CARD non trovato.');
+        setError('Dati ricevuti non validi o formato CARD non trovato.');
+        return;
       }
     } catch (err) {
       if (!isAuto) {
-        console.error('Probe Detailed Error:', err);
+        console.warn('Probe Detailed Error:', err.message || err);
         
         const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
         const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');

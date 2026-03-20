@@ -16,6 +16,7 @@ export default function Profilo() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [liveDataMap, setLiveDataMap] = useState({});
 
   // Form profilo
   const [profileForm, setProfileForm] = useState({
@@ -38,10 +39,10 @@ export default function Profilo() {
             const res = await fetch('/api/profile/get');
             return await res.json();
           }),
-          cachedFetch('devices', async () => {
+          cachedFetch('devices_v2', async () => {
             const { data } = await supabase
               .from('devices')
-              .select('*, product:products(name, slug), device_status:status(type)')
+              .select('*, product:products(name, slug), device_status:status(type), settings:device_settings(last_ip)')
               .eq('user_id', user.id)
               .order('created_at', { ascending: false });
             return { data };
@@ -88,6 +89,41 @@ export default function Profilo() {
     load();
   }, [supabase, router]);
 
+  useEffect(() => {
+    if (devices.length === 0) return;
+    
+    const fetchLive = async () => {
+      const newMap = {};
+      await Promise.all(devices.map(async (dev) => {
+        const targetIp = dev.settings?.last_ip || localStorage.getItem(`plant_device_ip_${dev.id}`);
+        if (targetIp) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 2000);
+            const res = await fetch(`http://${targetIp}/api/data`, { 
+              signal: controller.signal,
+              cache: 'no-store'
+            });
+            clearTimeout(timeoutId);
+            if (res.ok) {
+              const data = await res.json();
+              newMap[dev.id] = data;
+            } else {
+              newMap[dev.id] = { offline: true };
+            }
+          } catch (e) {
+            newMap[dev.id] = { offline: true };
+          }
+        }
+      }));
+      setLiveDataMap(prev => ({ ...prev, ...newMap }));
+    };
+
+    fetchLive();
+    const iv = setInterval(fetchLive, 5000);
+    return () => clearInterval(iv);
+  }, [devices]);
+
   const handleSaveProfile = async () => {
     setSaving(true);
     
@@ -120,10 +156,11 @@ export default function Profilo() {
   };
 
   // Metriche ecologiche
-  const totalDevices = devices.length;
-  const avgDaysPerDevice = 30;
-  const waterSaved = totalDevices * avgDaysPerDevice * 0.15;
-  const oxygenGenerated = totalDevices * avgDaysPerDevice * 5;
+
+  const waterSaved = devices.reduce((sum, dev) => sum + (dev.water_use || 0), 0);
+  const waterSavedMl = Math.round(waterSaved * 1000); // Converte litri in millilitri per la UI
+  // Ossigeno proporzionale al numero di vasi (es: 1 pianta = 150g di O2 generato)
+  const oxygenGenerated = devices.length * 150;
 
   if (loading) return <main className="page-hero text-center"><div className="container" style={{ paddingTop: '120px' }}>Caricamento profilo...</div></main>;
 
@@ -160,17 +197,17 @@ export default function Profilo() {
             }}>
               <div className="account-card" style={{ padding: '25px', textAlign: 'center', background: 'var(--accent-green-light)', border: '1px solid var(--accent-green)' }}>
                 <Leaf size={28} style={{ color: 'var(--accent-green)', marginBottom: '10px' }} />
-                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{totalDevices}</div>
+                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{devices.length}</div>
                 <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Vasi Connessi</div>
               </div>
               <div className="account-card" style={{ padding: '25px', textAlign: 'center', background: 'var(--bg-alt)', border: '1px solid var(--border-color)' }}>
                 <Droplets size={28} style={{ color: '#3b82f6', marginBottom: '10px' }} />
-                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{waterSaved.toFixed(1)}L</div>
+                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{waterSavedMl} ml</div>
                 <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Acqua Risparmiata</div>
               </div>
               <div className="account-card" style={{ padding: '25px', textAlign: 'center', background: 'var(--bg-alt)', border: '1px solid var(--border-color)' }}>
                 <Wind size={28} style={{ color: '#ca8a04', marginBottom: '10px' }} />
-                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{oxygenGenerated.toFixed(0)}g</div>
+                <div style={{ fontSize: '1.8rem', fontWeight: '800', color: 'var(--text-primary)' }}>{oxygenGenerated}g</div>
                 <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>O₂ Generato</div>
               </div>
             </div>
@@ -311,6 +348,16 @@ export default function Profilo() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(270px, 1fr))', gap: '16px' }}>
                   {devices.map(dev => {
                     const isActive = dev.device_status?.type === 'Active';
+                    const targetIp = dev.settings?.last_ip || (typeof window !== 'undefined' ? localStorage.getItem(`plant_device_ip_${dev.id}`) : null);
+                    const live = liveDataMap[dev.id];
+                    const isOnline = live && !live.offline;
+                    
+                    const statusText = isOnline ? 'Online' : (targetIp ? 'Offline' : 'Da configurare');
+                    const statusColor = isOnline ? 'var(--accent-green)' : (targetIp ? '#e53e3e' : 'var(--text-secondary)');
+                    const bgColor = isOnline ? 'var(--accent-green-light)' : (targetIp ? '#fef2f2' : 'var(--bg-alt)');
+                    const temp = isOnline && live.temperature?.value ? `${live.temperature.value}°C` : '—';
+                    const hum = isOnline && live.humidity?.value ? `${live.humidity.value}%` : '—';
+
                     return (
                       <div key={dev.id} style={{
                         border: `1px solid ${isActive ? 'var(--accent-green)' : 'var(--border-color)'}`,
@@ -342,11 +389,11 @@ export default function Profilo() {
                           <span style={{
                             display: 'inline-flex', alignItems: 'center', gap: '5px',
                             padding: '4px 10px', borderRadius: '20px', fontSize: '0.72rem', fontWeight: '700', flexShrink: 0,
-                            background: isActive ? 'var(--accent-green-light)' : 'var(--bg-alt)',
-                            color: isActive ? 'var(--accent-green)' : 'var(--text-secondary)'
+                            background: bgColor,
+                            color: statusColor
                           }}>
-                            {isActive ? <Wifi size={11} /> : <WifiOff size={11} />}
-                            {isActive ? 'Online' : 'Offline'}
+                            {isOnline ? <Wifi size={11} /> : <WifiOff size={11} />}
+                            {statusText}
                           </span>
                         </div>
 
@@ -357,14 +404,14 @@ export default function Profilo() {
                               <Droplets size={13} color="#3b82f6" />
                               <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Umidità</span>
                             </div>
-                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>—</div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>{hum}</div>
                           </div>
                           <div style={{ padding: '10px 12px', background: 'var(--bg-alt)', borderRadius: '10px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
                               <Thermometer size={13} color="#e53e3e" />
                               <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', fontWeight: '600' }}>Temp.</span>
                             </div>
-                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>—</div>
+                            <div style={{ fontSize: '1.1rem', fontWeight: '800', color: 'var(--text-primary)' }}>{temp}</div>
                           </div>
                         </div>
 

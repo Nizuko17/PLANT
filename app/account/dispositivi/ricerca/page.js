@@ -20,6 +20,28 @@ export default function RicercaDispositivo() {
   const [adding, setAdding] = useState(false);
   const [products, setProducts] = useState([]);
   const [registeredMacs, setRegisteredMacs] = useState([]);
+  const [udpScanning, setUdpScanning] = useState(false);
+  const [udpDevices, setUdpDevices] = useState([]);
+
+  const scanUdpNetwork = async () => {
+    setUdpScanning(true);
+    setUdpDevices([]);
+    setError(null);
+    try {
+      const res = await fetch('/api/devices/discover');
+      const result = await res.json();
+      if (result.success && result.devices && result.devices.length > 0) {
+        setUdpDevices(result.devices);
+      } else {
+        setError("Nessun dispositivo trovato tramite la ricerca di rete basata su broadcast (Assicurarsi che Web App e Apparecchio siano sotto lo stesso Router). Prova a inserire l'IP manualmente.");
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Errore durante la scansione di rete: " + err.message);
+    } finally {
+      setUdpScanning(false);
+    }
+  };
 
   useEffect(() => {
     async function loadData() {
@@ -136,12 +158,18 @@ export default function RicercaDispositivo() {
         body: JSON.stringify({
           name: foundDevice.device_name || 'Nuovo NodeMCU',
           product_id: productId,
-          mac_address: foundDevice.mac
+          mac_address: foundDevice.mac,
+          last_ip: ipAddress
         })
       });
 
       const result = await res.json();
       if (result.success) {
+        // Salva in localStorage per accesso rapido immediato
+        if (typeof window !== 'undefined' && result.deviceId) {
+          localStorage.setItem(`plant_device_ip_${result.deviceId}`, ipAddress);
+        }
+        
         invalidateCache('devices');
         // Aggiorna la lista dei MAC registrati
         setRegisteredMacs(prev => [...prev, (foundDevice.mac || '').toLowerCase()]);
@@ -330,7 +358,33 @@ export default function RicercaDispositivo() {
                 textAlign: 'center', padding: '20px 0', color: 'var(--text-secondary)',
                 fontSize: '0.85rem'
               }}>
-                <p>Inserisci l'indirizzo IP locale visualizzato sul serial monitor o fornito dal router (es: 192.168.x.x).</p>
+                <button 
+                  onClick={scanUdpNetwork}
+                  disabled={udpScanning}
+                  className="btn btn-secondary"
+                  style={{ width: '100%', marginBottom: '20px', padding: '12px', background: 'var(--accent-green-light)', color: 'var(--text-primary)', border: '1px solid var(--accent-green)', fontWeight: 'bold', borderRadius: '12px', transition: 'all 0.3s' }}
+                >
+                  {udpScanning ? <><Activity className="spin" size={16} style={{display:'inline', marginRight:'8px', verticalAlign:'text-bottom'}}/> Scansione rete in corso (3s)...</> : <><Search size={16} style={{display:'inline', marginRight:'8px', verticalAlign:'text-bottom'}}/> Cerca automaticamente nella rete locale</>}
+                </button>
+
+                {udpDevices.length > 0 && (
+                  <div style={{marginBottom: '20px', textAlign: 'left', background: 'var(--bg-alt)', padding: '15px', borderRadius: '12px', border: '1px solid var(--border-color)'}}>
+                    <h4 style={{marginBottom: '10px', color: 'var(--text-primary)'}}>Dispositivi trovati ({udpDevices.length}):</h4>
+                    <div style={{display: 'grid', gap: '10px'}}>
+                      {udpDevices.map((dev, i) => (
+                        <div key={i} style={{padding: '12px', borderRadius: '8px', background: 'var(--card-bg)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center'}}>
+                          <div>
+                            <div style={{fontWeight: 'bold', color: 'var(--text-primary)'}}>{dev.device_name} <span style={{fontSize: '0.75rem', fontWeight: 'normal', color: 'var(--text-secondary)'}}>({dev.ip})</span></div>
+                            <div style={{fontSize: '0.75rem'}}>{dev.mac}</div>
+                          </div>
+                          <button onClick={() => { setIpAddress(dev.ip); probeDevice(null, dev.ip); }} className="btn btn-primary" style={{padding: '6px 12px', fontSize: '0.8rem'}}>Seleziona</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                
+                <p>Oppure inserisci l'indirizzo IP locale visualizzato sul serial monitor o fornito dal router (es: 192.168.x.x).</p>
                 <div style={{ marginTop: '15px', padding: '10px', background: 'var(--bg-alt)', borderRadius: '8px', fontSize: '0.75rem' }}>
                   <span style={{ fontWeight: '700' }}>Pro TIP:</span> Se hai configurato mDNS, prova con <code>pompa.local</code>
                 </div>

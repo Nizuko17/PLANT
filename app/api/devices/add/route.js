@@ -50,20 +50,21 @@ export async function POST(request) {
     }
 
     // 5. Inserimento nel DB
-    const { error } = await supabase.from('devices').insert([{
+    const { data: newDevice, error } = await supabase.from('devices').insert([{
       user_id: session.user.id,
       name: name.replace(/<[^>]*>?/gm, ''), // XSS protection
       product_id: parseInt(product_id),
       mac_address: mac_address || null,
       status_id: 1, 
-    }]);
+      last_ip: last_ip || null
+    }]).select('id').single();
 
     if (error) {
       console.error('DB Insert Device Error:', error);
       return NextResponse.json({ error: 'Errore nel salvataggio del dispositivo' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, deviceId: newDevice?.id });
   } catch (error) {
     console.error('API Device Add Error:', error);
     return NextResponse.json({ error: 'Errore interno' }, { status: 500 });

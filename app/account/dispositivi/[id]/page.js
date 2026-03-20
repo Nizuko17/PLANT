@@ -1,25 +1,44 @@
 'use client';
 
 import { createClient } from '@/utils/supabase/client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import {
   ArrowLeft, Sprout, Wifi, WifiOff, Thermometer, Droplets,
   Bell, BellOff, Power, Monitor, Circle, Save, Edit3, X,
   MapPin, Clock, RefreshCw, AlertTriangle, CheckCircle2, Activity,
-  Navigation, Loader2, Beaker
+  Navigation, Loader2, Beaker, Volume2, VolumeX, Timer, Zap,
+  CloudSun, Newspaper, Globe
 } from 'lucide-react';
 import Link from 'next/link';
 import FadeIn from '@/components/FadeIn';
 import { invalidateCache } from '@/hooks/useCache';
 
 // ─── Helper: stato sensore → colore ───────────────────────────────────────────
-function getSensorStatus(value, type) {
+function getSensorStatus(value, type, thresholds = {}) {
   if (value === null || value === undefined) return 'unknown';
-  if (type === 'temp') return value < 10 ? 'cold' : value > 35 ? 'hot' : 'ok';
-  if (type === 'hum') return value < 20 ? 'dry' : value > 80 ? 'wet' : 'ok';
+  if (type === 'temp') {
+    const limit = thresholds.temp || 35;
+    return value < 10 ? 'cold' : value > limit ? 'hot' : 'ok';
+  }
+  if (type === 'hum') {
+    const limit = thresholds.hum || 20;
+    return value < limit ? 'dry' : value > 80 ? 'wet' : 'ok';
+  }
   if (type === 'ph') return value < 6.0 ? 'acid' : value > 8.0 ? 'basic' : 'ok';
   return 'ok';
+}
+
+// Normalizza input "IP dispositivo" per evitare URL invalidi:
+// - rimuove eventuale prefisso "http://"
+// - rimuove slash finali
+function normalizeDeviceIp(rawIp) {
+  if (rawIp === null || rawIp === undefined) return '';
+  const value = String(rawIp).trim();
+  if (!value) return '';
+  return value
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/+$/g, '');
 }
 
 const STATUS_COLORS = {
@@ -34,8 +53,8 @@ const STATUS_COLORS = {
 };
 
 // ─── Componente Card Sensore ──────────────────────────────────────────────────
-function SensorCard({ icon: Icon, title, value, unit, statusType, extra }) {
-  const st = getSensorStatus(value, statusType);
+function SensorCard({ icon: Icon, title, value, unit, statusType, thresholds, extra }) {
+  const st = getSensorStatus(value, statusType, thresholds);
   const s = STATUS_COLORS[st];
   return (
     <div style={{
@@ -76,7 +95,7 @@ function SensorCard({ icon: Icon, title, value, unit, statusType, extra }) {
 }
 
 // ─── Componente Toggle Controllo ──────────────────────────────────────────────
-function ControlToggle({ icon: Icon, iconOff: IconOff, title, value, onChange, disabled, color = 'var(--accent-green)' }) {
+function ControlToggle({ icon: Icon, iconOff: IconOff, title, value, onChange, disabled, color = 'var(--accent-green)', subtitle }) {
   const isOn = Boolean(value);
   return (
     <div style={{
@@ -117,7 +136,7 @@ function ControlToggle({ icon: Icon, iconOff: IconOff, title, value, onChange, d
       <div>
         <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '2px', fontWeight: '500' }}>{title}</div>
         <div style={{ fontSize: '0.95rem', fontWeight: '700', color: isOn ? color : 'var(--text-secondary)' }}>
-          {isOn ? 'Attivo' : 'Spento'}
+          {subtitle || (isOn ? 'Attivo' : 'Spento')}
         </div>
       </div>
     </div>
@@ -153,6 +172,156 @@ function ButtonIndicator({ isPressed }) {
   );
 }
 
+// ─── Componente Pompa Irriga ──────────────────────────────────────────────────
+function PumpIrrigateCard({ deviceId, deviceIp, pumpDuration, disabled }) {
+  const [irrigating, setIrrigating] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const timerRef = useRef(null);
+
+  const startIrrigation = async () => {
+    if (!deviceIp || irrigating) return;
+    setIrrigating(true);
+    setCountdown(pumpDuration);
+
+    try {
+      // Accendi pompa
+      const params = new URLSearchParams({ target: 'pump', on: 'true', speed: '80' });
+      await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
+
+      // Incrementa water_use nel database per la statistica Acqua Risparmiata (100ml = 0.1)
+      fetch(`/api/devices/${deviceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ increment_water: 0.1 })
+      }).catch(() => {});
+    } catch { /* silent */ }
+
+    // Countdown
+    timerRef.current = setInterval(() => {
+      setCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(timerRef.current);
+          // Spegni pompa
+          const params = new URLSearchParams({ target: 'pump', on: 'false' });
+          fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' }).catch(() => {});
+          setIrrigating(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  // Cleanup
+  useEffect(() => () => { if (timerRef.current) clearInterval(timerRef.current); }, []);
+
+  const progress = irrigating ? ((pumpDuration - countdown) / pumpDuration) * 100 : 0;
+
+  return (
+    <div style={{
+      background: 'var(--card-bg)', border: `1px solid ${irrigating ? '#3b82f6' : 'var(--border-color)'}`,
+      borderRadius: '20px', padding: '22px', display: 'flex',
+      flexDirection: 'column', gap: '14px', position: 'relative', overflow: 'hidden',
+      transition: 'border-color 0.3s'
+    }}>
+      {/* Barra di progresso */}
+      <div style={{
+        position: 'absolute', top: 0, left: 0, height: '3px',
+        width: irrigating ? `${progress}%` : '0%',
+        background: '#3b82f6', transition: 'width 1s linear'
+      }} />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{
+          width: '42px', height: '42px', borderRadius: '12px',
+          background: irrigating ? '#dbeafe' : 'var(--bg-alt)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'background 0.3s'
+        }}>
+          <Droplets size={22} color={irrigating ? '#3b82f6' : 'var(--text-secondary)'} />
+        </div>
+        <button
+          onClick={startIrrigation}
+          disabled={disabled || irrigating}
+          style={{
+            padding: '8px 18px', borderRadius: '12px', border: 'none',
+            background: irrigating ? '#93c5fd' : '#3b82f6',
+            color: 'white', fontWeight: '700', fontSize: '0.85rem',
+            cursor: (disabled || irrigating) ? 'not-allowed' : 'pointer',
+            display: 'flex', alignItems: 'center', gap: '6px',
+            transition: 'background 0.3s', opacity: disabled ? 0.5 : 1
+          }}
+        >
+          {irrigating ? (
+            <><Timer size={15} /> {countdown}s</>
+          ) : (
+            <><Zap size={15} /> IRRIGA</>
+          )}
+        </button>
+      </div>
+      <div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '2px', fontWeight: '500' }}>Pompa Acqua</div>
+        <div style={{ fontSize: '0.95rem', fontWeight: '700', color: irrigating ? '#3b82f6' : 'var(--text-secondary)' }}>
+          {irrigating ? `Irrigazione in corso... ${countdown}s` : `Durata: ${pumpDuration}s`}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Calcolo Benessere Pianta ─────────────────────────────────────────────────
+function calcolaBenessere(temp, hum, ph) {
+  // Pesi: temperatura 35%, umidità 35%, pH 30%
+  let tempScore = null, humScore = null, phScore = null;
+
+  if (temp !== null) {
+    if (temp >= 18 && temp <= 28) tempScore = 100;
+    else if (temp >= 15 && temp <= 30) tempScore = 80;
+    else if (temp >= 10 && temp <= 35) tempScore = 55;
+    else if (temp >= 5 && temp <= 40) tempScore = 30;
+    else tempScore = 10;
+  }
+
+  if (hum !== null) {
+    if (hum >= 40 && hum <= 65) humScore = 100;
+    else if (hum >= 30 && hum <= 75) humScore = 80;
+    else if (hum >= 20 && hum <= 85) humScore = 55;
+    else humScore = 25;
+  }
+
+  if (ph !== null) {
+    if (ph >= 6.0 && ph <= 7.5) phScore = 100;
+    else if (ph >= 5.5 && ph <= 8.0) phScore = 75;
+    else if (ph >= 5.0 && ph <= 8.5) phScore = 45;
+    else phScore = 15;
+  }
+
+  const scores = [];
+  const weights = [];
+  if (tempScore !== null) { scores.push(tempScore); weights.push(0.35); }
+  if (humScore !== null)  { scores.push(humScore);  weights.push(0.35); }
+  if (phScore !== null)   { scores.push(phScore);   weights.push(0.30); }
+
+  if (scores.length === 0) return null;
+
+  // Normalizza pesi
+  const totalWeight = weights.reduce((a, b) => a + b, 0);
+  let weighted = 0;
+  for (let i = 0; i < scores.length; i++) {
+    weighted += scores[i] * (weights[i] / totalWeight);
+  }
+  return Math.round(weighted);
+}
+
+function getWellnessLabel(score) {
+  if (score === null) return { emoji: '', text: 'Dati non disponibili' };
+  if (score >= 85) return { emoji: '🌱', text: 'Condizioni Ottimali' };
+  if (score >= 70) return { emoji: '☀️', text: 'Buone Condizioni' };
+  if (score >= 50) return { emoji: '⚠️', text: 'Attenzione Richiesta' };
+  if (score >= 30) return { emoji: '🔶', text: 'Condizioni Critiche' };
+  return { emoji: '🆘', text: 'Intervento Urgente' };
+}
+
 // ─── PAGINA PRINCIPALE ────────────────────────────────────────────────────────
 export default function GestioneDispositivo() {
   const router = useRouter();
@@ -164,73 +333,167 @@ export default function GestioneDispositivo() {
   const [loading, setLoading] = useState(true);
   const [liveData, setLiveData] = useState(null);
   const [pollingActive, setPollingActive] = useState(false);
+  const [liveOnline, setLiveOnline] = useState(false);
 
   // Editing
   const [editingSettings, setEditingSettings] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [settingsForm, setSettingsForm] = useState({
     name: '', humidity_threshold: 30, temperature_alert: 35,
     auto_water: true, latitude: '', longitude: '', city: '',
-    sync_time: '', sync_date: ''
+    sync_time: '', sync_date: '',
+    pump_duration: 10, buzzer_alarms_enabled: true,
+    meteo_key: '', news_key: '', spotify_creds: '', spotify_refresh: ''
   });
 
   // Controls
   const [buzzer, setBuzzer] = useState(false);
-  const [pump, setPump] = useState(false);
   const [monitorOn, setMonitorOn] = useState(false);
   const [buttonPressed, setButtonPressed] = useState(false);
   const [sendingCmd, setSendingCmd] = useState({});
 
-  // IP del dispositivo (se disponibile)
-  const [deviceIp, setDeviceIp] = useState(null);
+  // IP del dispositivo — persistente
+  const [deviceIp, setDeviceIp] = useState('');
+  const [ipInput, setIpInput] = useState('');
 
   // ─── Caricamento dati dispositivo ─────────────────────────────────────────
   useEffect(() => {
     if (!deviceId) return;
     const load = async () => {
-      const res = await fetch(`/api/devices/${deviceId}`);
-      if (!res.ok) { router.push('/account/profilo'); return; }
-      const data = await res.json();
-      setDevice(data);
-      setSettingsForm({
-        name: data.name || '',
-        humidity_threshold: data.settings?.humidity_threshold ?? 30,
-        temperature_alert: data.settings?.temperature_alert ?? 35,
-        auto_water: data.settings?.auto_water ?? true,
-        latitude: data.settings?.latitude ?? '',
-        longitude: data.settings?.longitude ?? '',
-        city: data.settings?.city ?? '',
-        sync_time: new Date().toTimeString().slice(0, 5),
-        sync_date: new Date().toISOString().slice(0, 10),
-      });
-      setLoading(false);
+      try {
+        const res = await fetch(`/api/devices/${deviceId}`);
+        if (!res.ok) { router.push('/account/profilo'); return; }
+        const data = await res.json();
+        setDevice(data);
+
+        // Usa l'IP del DB, oppure fallback su localStorage se presente
+        const localIp = typeof window !== 'undefined' ? localStorage.getItem(`plant_device_ip_${deviceId}`) : null;
+        const savedIpRaw = data.settings?.last_ip || localIp || '';
+        const savedIp = normalizeDeviceIp(savedIpRaw);
+        setDeviceIp(savedIp);
+        setIpInput(savedIp);
+
+        setSettingsForm({
+          name: data.name || '',
+          humidity_threshold: data.settings?.humidity_threshold ?? 30,
+          temperature_alert: data.settings?.temperature_alert ?? 35,
+          auto_water: data.settings?.auto_water ?? true,
+          latitude: data.settings?.latitude ?? '',
+          longitude: data.settings?.longitude ?? '',
+          city: data.settings?.city ?? '',
+          sync_time: new Date().toTimeString().slice(0, 5),
+          sync_date: new Date().toISOString().slice(0, 10),
+          pump_duration: data.settings?.pump_duration ?? 10,
+          buzzer_alarms_enabled: data.settings?.buzzer_alarms_enabled ?? true,
+          meteo_key: '', news_key: '', spotify_creds: '', spotify_refresh: ''
+        });
+      } catch (err) {
+        console.error('Errore caricamento dispositivo:', err);
+        router.push('/account/profilo');
+      } finally {
+        setLoading(false);
+      }
     };
     load();
   }, [deviceId]);
 
-  // ─── Polling live data (ogni 10s) ─────────────────────────────────────────
+  const connectIp = useCallback(async (ip) => {
+    const cleanIp = normalizeDeviceIp(ip);
+    if (!cleanIp) { 
+      setDeviceIp(''); 
+      setLiveOnline(false); 
+      if (typeof window !== 'undefined') localStorage.removeItem(`plant_device_ip_${deviceId}`);
+      return; 
+    }
+    setDeviceIp(cleanIp);
+    if (typeof window !== 'undefined') localStorage.setItem(`plant_device_ip_${deviceId}`, cleanIp);
+
+    // Salva IP nel DB
+    try {
+      await fetch(`/api/devices/${deviceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ last_ip: cleanIp })
+      });
+    } catch { /* silent */ }
+  }, [deviceId]);
+
+  // ─── Polling live data (ogni 3s) ──────────────────────────────────────────
   const pollDevice = useCallback(async (ip) => {
-    if (!ip) return;
+    const normalizedIp = normalizeDeviceIp(ip);
+    if (!normalizedIp) return;
     try {
       const ctrl = new AbortController();
       const tid = setTimeout(() => ctrl.abort(), 4000);
-      // Endpoint ufficiale: GET /api/data
-      const res = await fetch(`http://${ip}/api/data`, { signal: ctrl.signal, mode: 'cors' });
+      const url = `http://${normalizedIp}/api/data`;
+      const res = await fetch(url, {
+        signal: ctrl.signal,
+        mode: 'cors',
+        cache: 'no-store'
+      });
       clearTimeout(tid);
+      if (!res.ok) {
+        throw new Error(`Device responded with status ${res.status}`);
+      }
       const data = await res.json();
       setLiveData(data);
-      // Struttura dati dallo schema: data.buzzer.on, data.pump.on, ecc.
+      setLiveOnline(true);
+      
+      // 1. Quando trovo un plant (risponde correttamente), salva il suo IP se diverso
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem(`plant_device_ip_${deviceId}`);
+        if (saved !== normalizedIp) {
+          localStorage.setItem(`plant_device_ip_${deviceId}`, normalizedIp);
+          // Salva anche nel DB admin
+          fetch(`/api/devices/${deviceId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ last_ip: normalizedIp })
+          }).catch(() => {});
+        }
+      }
+
       setBuzzer(data?.buzzer?.on ?? false);
-      setPump(data?.pump?.on ?? false);
       setMonitorOn(data?.monitor?.on ?? false);
       setButtonPressed(data?.button?.pressed ?? false);
-    } catch { /* dispositivo offline o non raggiungibile */ }
-  }, []);
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        setLiveOnline(false);
+        return;
+      }
+      console.warn('Fetch error from NodeMCU:', err);
+      setLiveOnline(false);
+    }
+  }, [deviceId]);
 
   useEffect(() => {
-    if (!deviceIp) return;
+    if (!deviceIp) { setPollingActive(false); setLiveOnline(false); return; }
+    
+    // Fetch settings live dal dispositivo
+    const fetchLiveSettings = async () => {
+      try {
+        const res = await fetch(`http://${deviceIp}/api/settings`, { mode: 'cors' });
+        if (res.ok) {
+          const s = await res.json();
+          setSettingsForm(prev => ({
+            ...prev,
+            name: s.device_name || prev.name,
+            meteo_key: s.meteo_key || '',
+            news_key: s.news_key || '',
+            city: s.city || prev.city,
+            spotify_creds: s.spotify_creds || '',
+            spotify_refresh: s.spotify_refresh || '',
+            sh_url: s.sh_url || '',
+            sh_key: s.sh_key || ''
+          }));
+        }
+      } catch (err) { console.warn('Impossibile recuperare impostazioni live'); }
+    };
+    
+    fetchLiveSettings();
     pollDevice(deviceIp);
-    const interval = setInterval(() => pollDevice(deviceIp), 10000);
+    const interval = setInterval(() => pollDevice(deviceIp), 3000);
     setPollingActive(true);
     return () => { clearInterval(interval); setPollingActive(false); };
   }, [deviceIp, pollDevice]);
@@ -238,80 +501,178 @@ export default function GestioneDispositivo() {
   // ─── Salvataggio impostazioni ──────────────────────────────────────────────
   const handleSaveSettings = async () => {
     setSaving(true);
-    const res = await fetch(`/api/devices/${deviceId}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settingsForm)
-    });
-    const result = await res.json();
-    if (result.success) {
-      setDevice(prev => ({ ...prev, name: settingsForm.name }));
-      setEditingSettings(false);
-      invalidateCache('devices');
+    try {
+      const res = await fetch(`/api/devices/${deviceId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(settingsForm)
+      });
+      const result = await res.json();
+      if (result.success) {
+        setDevice(prev => ({ ...prev, name: settingsForm.name }));
+        setEditingSettings(false);
+        invalidateCache('devices');
 
-      if (deviceIp) {
-        // Sync datetime via GET /api/set?target=datetime&... (schema ufficiale)
-        try {
-          const [h, m] = settingsForm.sync_time.split(':');
-          const d = new Date(settingsForm.sync_date);
-          const giorni = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
-          const weekday = giorni[d.getDay()];
-          const params = new URLSearchParams({
-            target: 'datetime',
-            year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(),
-            hour: h, minute: m, second: 0, weekday
-          });
-          await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
-        } catch { /* silent fail */ }
-
-        // Sync geo via GET /api/set?target=geo&...
-        if (settingsForm.latitude && settingsForm.longitude) {
+        if (deviceIp) {
+          // Sync datetime
           try {
-            const params = new URLSearchParams({
-              target: 'geo',
-              lat: settingsForm.latitude,
-              lon: settingsForm.longitude,
-              city: settingsForm.city || ''
+            const [h, m] = settingsForm.sync_time.split(':');
+            const d = new Date(settingsForm.sync_date);
+            const giorni = ['Domenica','Lunedì','Martedì','Mercoledì','Giovedì','Venerdì','Sabato'];
+            const weekday = giorni[d.getDay()];
+            const dtParams = new URLSearchParams({
+              target: 'datetime',
+              year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(),
+              hour: h, minute: m, second: 0, weekday
             });
-            await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
-          } catch { /* silent fail */ }
+            await fetch(`http://${deviceIp}/api/set?${dtParams}`, { mode: 'cors' });
+          } catch { /* silent */ }
+
+          // Sync geo
+          if (settingsForm.latitude && settingsForm.longitude) {
+            try {
+              const geoParams = new URLSearchParams({
+                target: 'geo',
+                lat: settingsForm.latitude,
+                lon: settingsForm.longitude,
+                city: settingsForm.city || ''
+              });
+              await fetch(`http://${deviceIp}/api/set?${geoParams}`, { mode: 'cors' });
+            } catch { /* silent */ }
+          }
+          
+          // Sync settings hardware & API
+          try {
+            const body = new URLSearchParams({
+              name: settingsForm.name,
+              meteo_key: settingsForm.meteo_key,
+              news_key: settingsForm.news_key,
+              city: settingsForm.city,
+              spotify_refresh: settingsForm.spotify_refresh,
+              spotify_creds: settingsForm.spotify_creds,
+              sh_url: settingsForm.sh_url || '',
+              sh_key: settingsForm.sh_key || '',
+              buzzer_alarms: settingsForm.buzzer_alarms_enabled
+            });
+
+            const sRes = await fetch(`http://${deviceIp}/api/settings`, { 
+              method: 'POST', 
+              mode: 'cors',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: body.toString()
+            });
+            
+            if (!sRes.ok) {
+              const errData = await sRes.json();
+              alert(`Errore hardware: ${errData.msg || 'Impossibile salvare sul dispositivo'}`);
+            }
+          } catch (err) { 
+            console.warn('Avviso sync hardware (il dispositivo si è probabilmente riavviato):', err.message); 
+          }
         }
+      } else {
+        alert(result.error || 'Errore nel salvataggio.');
       }
-    } else {
-      alert(result.error || 'Errore nel salvataggio.');
+    } catch (err) {
+      alert('Errore di rete nel salvataggio.');
     }
     setSaving(false);
   };
 
-  // ─── Controllo via API NodeMCU ─────────────────────────────────────────────  // Controllo via GET /api/set (schema ufficiale NodeMCU)
+  // ─── Eliminazione Dispositivo ──────────────────────────────────────────────
+  const handleDeleteDevice = async () => {
+    if (!confirm('Sei sicuro di voler rimuovere questo dispositivo? L\'azione è irreversibile.')) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}`, { method: 'DELETE' });
+      const result = await res.json();
+      if (result.success) {
+        invalidateCache('devices');
+        router.push('/account/profilo');
+      } else {
+        alert(result.error || 'Errore durante la rimozione.');
+        setIsDeleting(false);
+      }
+    } catch {
+      alert('Errore di rete durante la rimozione.');
+      setIsDeleting(false);
+    }
+  };
+  
+  // ─── Test API NodeMCU ──────────────────────────────────────────────────────
+  const [testingApi, setTestingApi] = useState(false);
+  const handleTestApi = async () => {
+    if (!deviceIp) return;
+    setTestingApi(true);
+    try {
+      const body = new URLSearchParams({
+        test_only: 'true',
+        meteo_key: settingsForm.meteo_key,
+        news_key: settingsForm.news_key,
+        city: settingsForm.city
+      });
+      const res = await fetch(`http://${deviceIp}/api/settings`, { 
+        method: 'POST', mode: 'cors',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      const data = await res.json();
+      alert(data.msg || (data.ok ? 'Test superato!' : 'Errore nel test.'));
+    } catch { alert('Impossibile contattare il dispositivo hardware.'); }
+    setTestingApi(false);
+  };
+
+  // ─── Controllo via API NodeMCU ─────────────────────────────────────────────
   const sendCommand = async (cmd, value) => {
     if (!deviceIp) return;
     setSendingCmd(p => ({ ...p, [cmd]: true }));
     try {
-      // Pompa ha parametro "on", gli altri usano "value"
       const params = cmd === 'pump'
         ? new URLSearchParams({ target: cmd, on: value, speed: 80 })
         : new URLSearchParams({ target: cmd, value });
       await fetch(`http://${deviceIp}/api/set?${params}`, { mode: 'cors' });
       switch (cmd) {
         case 'buzzer': setBuzzer(value); break;
-        case 'pump': setPump(value); break;
         case 'monitor': setMonitorOn(value); break;
       }
-    } catch { /* silent fail — dispositivo offline */ }
+    } catch { /* silent */ }
     setSendingCmd(p => ({ ...p, [cmd]: false }));
   };
 
   // ─── Geolocalizzazione automatica ─────────────────────────────────────────
-  const detectLocation = () => {
-    if (!navigator.geolocation) return;
-    navigator.geolocation.getCurrentPosition(pos => {
-      setSettingsForm(f => ({
-        ...f,
-        latitude: pos.coords.latitude.toFixed(6),
-        longitude: pos.coords.longitude.toFixed(6)
-      }));
-    });
+  const detectLocation = async () => {
+    try {
+      // 1. Tenta API IP: aggira i blocchi HTTPS del browser e ricava la città
+      const res = await fetch('http://ip-api.com/json/');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.status === 'success') {
+          setSettingsForm(f => ({
+            ...f,
+            latitude: data.lat.toFixed(6),
+            longitude: data.lon.toFixed(6),
+            city: data.city || f.city
+          }));
+          return;
+        }
+      }
+    } catch { /* proceed to fallback */ }
+
+    // 2. Fallback: Geolocalizzazione Browser
+    if (!navigator.geolocation) {
+      alert("Geolocalizzazione non supportata o bloccata dal browser.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        setSettingsForm(f => ({
+          ...f,
+          latitude: pos.coords.latitude.toFixed(6),
+          longitude: pos.coords.longitude.toFixed(6)
+        }));
+      },
+      err => alert("Errore nel rilevamento: " + err.message)
+    );
   };
 
   // ─── Sync ora attuale ──────────────────────────────────────────────────────
@@ -334,8 +695,8 @@ export default function GestioneDispositivo() {
     </main>
   );
 
-  const isOnline = device?.device_status?.type === 'Active';
-  // Dati live dalla struttura annidata dello schema: data.temperature.value, data.humidity.value
+  // ─── Dati live ─────────────────────────────────────────────────────────────
+  const isOnline = liveOnline && liveData !== null;
   const tempRaw = liveData?.temperature?.value ?? null;
   const humRaw = liveData?.humidity?.value ?? null;
   const phRaw = liveData?.ph?.value ?? null;
@@ -345,16 +706,19 @@ export default function GestioneDispositivo() {
   const pumpSpeed = liveData?.pump?.speed ?? null;
   const pumpLastOn = liveData?.pump?.last_on ?? null;
   const dataAge = liveData?.network?.data_age ?? null;
+  const megaOnline = liveData?.network?.mega_online ?? null;
+  const dhtOnline = liveData?.temperature?.online ?? true;
 
-  // Calcola punteggio benessere
-  const tempScore = temp !== null ? (temp >= 15 && temp <= 30 ? 100 : temp >= 10 && temp <= 35 ? 65 : 30) : null;
-  const humScore = hum !== null ? (hum >= 40 && hum <= 70 ? 100 : hum >= 20 && hum <= 80 ? 65 : 30) : null;
-  const wellnessScore = tempScore !== null && humScore !== null ? Math.round((tempScore + humScore) / 2) : null;
-
+  // Calcola punteggio benessere (reale con pH)
+  const wellnessScore = calcolaBenessere(temp, hum, ph);
+  const wellnessLabel = getWellnessLabel(wellnessScore);
+  const thresholds = { temp: settingsForm.temperature_alert, hum: settingsForm.humidity_threshold };
   const wellnessColor = wellnessScore === null ? 'var(--text-secondary)'
     : wellnessScore >= 80 ? 'var(--accent-green)'
     : wellnessScore >= 50 ? '#d97706'
     : '#e53e3e';
+
+  const pumpDuration = device?.settings?.pump_duration ?? settingsForm.pump_duration ?? 10;
 
   return (
     <main style={{ minHeight: '100vh', background: 'var(--bg-color)', paddingBottom: '80px' }}>
@@ -375,11 +739,13 @@ export default function GestioneDispositivo() {
               {/* Icona pianta */}
               <div style={{
                 width: '80px', height: '80px', borderRadius: '24px',
-                background: 'var(--accent-green-light)', border: '2px solid var(--accent-green)',
+                background: isOnline ? 'var(--accent-green-light)' : 'var(--bg-alt)',
+                border: `2px solid ${isOnline ? 'var(--accent-green)' : 'var(--border-color)'}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0, boxShadow: '0 8px 25px rgba(167,196,170,0.25)'
+                flexShrink: 0, boxShadow: isOnline ? '0 8px 25px rgba(167,196,170,0.25)' : 'none',
+                transition: 'all 0.3s'
               }}>
-                <Sprout size={40} color="var(--accent-green)" />
+                <Sprout size={40} color={isOnline ? 'var(--accent-green)' : 'var(--text-secondary)'} />
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
@@ -388,12 +754,13 @@ export default function GestioneDispositivo() {
                     display: 'inline-flex', alignItems: 'center', gap: '6px',
                     padding: '4px 12px', borderRadius: '20px', fontSize: '0.8rem', fontWeight: '700',
                     background: isOnline ? 'var(--accent-green-light)' : 'var(--bg-alt)',
-                    color: isOnline ? 'var(--accent-green)' : 'var(--text-secondary)'
+                    color: isOnline ? 'var(--accent-green)' : 'var(--text-secondary)',
+                    transition: 'all 0.3s'
                   }}>
                     {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
-                    {isOnline ? 'Online' : 'Offline'}
+                    {isOnline ? 'Online' : (deviceIp ? 'Offline' : 'Non connesso')}
                   </span>
-                  {pollingActive && (
+                  {pollingActive && isOnline && (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--accent-green)' }}>
                       <Activity size={12} /> Live
                     </span>
@@ -403,28 +770,28 @@ export default function GestioneDispositivo() {
                   {device?.product?.name || 'PLANT Smart Vase'} · MAC: <code style={{ fontSize: '0.8rem' }}>{device?.mac_address || 'N/D'}</code>
                 </div>
               </div>
-              {/* Input IP manuale per connessione live */}
+              {/* Input IP con connessione */}
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <input
                   type="text"
                   placeholder="IP dispositivo (live)"
-                  defaultValue={deviceIp || ''}
-                  onBlur={e => setDeviceIp(e.target.value.trim() || null)}
+                  value={ipInput}
+                  onChange={e => setIpInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') connectIp(ipInput); }}
                   style={{
-                    padding: '8px 14px', border: '1px solid var(--border-color)',
+                    padding: '8px 14px', border: `1px solid ${isOnline ? 'var(--accent-green)' : 'var(--border-color)'}`,
                     borderRadius: '10px', fontSize: '0.85rem', background: 'var(--input-bg)',
-                    color: 'var(--text-primary)', width: '200px'
+                    color: 'var(--text-primary)', width: '200px', transition: 'border-color 0.3s'
                   }}
                 />
                 <button
-                  onClick={() => pollDevice(deviceIp)}
-                  disabled={!deviceIp}
+                  onClick={() => connectIp(ipInput)}
                   style={{
                     padding: '8px 12px', border: '1px solid var(--border-color)',
                     borderRadius: '10px', background: 'var(--card-bg)', cursor: 'pointer',
                     color: 'var(--text-secondary)', display: 'flex', alignItems: 'center'
                   }}
-                  title="Aggiorna dati"
+                  title="Connetti / Aggiorna"
                 >
                   <RefreshCw size={16} />
                 </button>
@@ -439,10 +806,11 @@ export default function GestioneDispositivo() {
         {/* ── Card Benessere Pianta ───────────────────────────────────────── */}
         <FadeIn>
           <div style={{
-            background: 'linear-gradient(135deg, var(--accent-green-light) 0%, var(--card-bg) 100%)',
-            border: '1px solid var(--accent-green)', borderRadius: '24px',
-            padding: '30px', marginBottom: '28px',
-            display: 'flex', alignItems: 'center', gap: '30px', flexWrap: 'wrap'
+            background: `linear-gradient(135deg, ${isOnline ? 'var(--accent-green-light)' : 'var(--bg-alt)'} 0%, var(--card-bg) 100%)`,
+            border: `1px solid ${isOnline ? 'var(--accent-green)' : 'var(--border-color)'}`,
+            borderRadius: '24px', padding: '30px', marginBottom: '28px',
+            display: 'flex', alignItems: 'center', gap: '30px', flexWrap: 'wrap',
+            transition: 'all 0.3s'
           }}>
             {/* Indicatore circolare */}
             <div style={{ position: 'relative', flexShrink: 0 }}>
@@ -471,18 +839,21 @@ export default function GestioneDispositivo() {
                 Benessere Pianta
               </div>
               <div style={{ fontSize: '1.5rem', fontWeight: '800', color: 'var(--text-primary)', marginBottom: '8px' }}>
-                {wellnessScore === null ? 'Dati non disponibili'
-                  : wellnessScore >= 80 ? '🌱 Condizioni Ottimali'
-                  : wellnessScore >= 50 ? '⚠️ Attenzione Richiesta'
-                  : '🆘 Intervento Necessario'}
+                {wellnessLabel.emoji} {wellnessLabel.text}
               </div>
               <p style={{ fontSize: '0.88rem', color: 'var(--text-secondary)', margin: '0 0 8px' }}>
                 {!deviceIp ? 'Inserisci l\'IP del dispositivo per monitorare i dati live.'
-                  : wellnessScore === null ? 'Connessione al dispositivo in corso...'
-                  : `Temperatura ${temp}°C · Umidità ${hum}% · Aggiornamento ogni 10s`}
+                  : !isOnline ? 'Dispositivo non raggiungibile. Verifica l\'IP e la connessione.'
+                  : wellnessScore === null ? 'In attesa dei dati dai sensori...'
+                  : `Temp. ${temp}°C · Umidità ${hum}% · pH ${ph ?? '—'} · Aggiornamento ogni 3s`}
               </p>
               {liveData && (
-                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {!dhtOnline && (
+                    <span style={{ fontSize: '0.72rem', fontWeight: '700', padding: '3px 8px', borderRadius: '10px', background: '#fef2f2', color: '#e53e3e' }}>
+                      ⚠ DHT11 Offline
+                    </span>
+                  )}
                   {liveData.temperature?.status === 'ALLERTA' && (
                     <span style={{ fontSize: '0.72rem', fontWeight: '700', padding: '3px 8px', borderRadius: '10px', background: '#fef2f2', color: '#e53e3e' }}>
                       ⚠ Allerta Temperatura
@@ -493,14 +864,14 @@ export default function GestioneDispositivo() {
                       ⚠ pH {liveData.ph.status}
                     </span>
                   )}
+                  {megaOnline === false && (
+                    <span style={{ fontSize: '0.72rem', fontWeight: '700', padding: '3px 8px', borderRadius: '10px', background: '#fef2f2', color: '#e53e3e' }}>
+                      ⚠ Mega Offline
+                    </span>
+                  )}
                   {pumpLastOn && (
                     <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', padding: '3px 8px', borderRadius: '10px', background: 'var(--bg-alt)' }}>
                       💧 Pompa: {pumpLastOn}
-                    </span>
-                  )}
-                  {dataAge !== null && (
-                    <span style={{ fontSize: '0.72rem', color: dataAge > 10 ? '#e53e3e' : 'var(--text-secondary)', padding: '3px 8px', borderRadius: '10px', background: 'var(--bg-alt)' }}>
-                      {dataAge > 10 ? '⚠ Mega offline' : `Mega: ${dataAge}s fa`}
                     </span>
                   )}
                   {liveData.network?.ssid && (
@@ -526,11 +897,13 @@ export default function GestioneDispositivo() {
         <FadeIn>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '16px', marginBottom: '28px' }}>
             <SensorCard icon={Thermometer} title="Temperatura" value={temp} unit="°C" statusType="temp"
-              extra={temp !== null ? `Soglia: ${device?.settings?.temperature_alert ?? 35}°C` : null} />
+              thresholds={thresholds}
+              extra={temp !== null ? `Soglia: ${settingsForm.temperature_alert}°C` : null} />
             <SensorCard icon={Droplets} title="Umidità" value={hum} unit="%" statusType="hum"
-              extra={hum !== null ? `Soglia: ${device?.settings?.humidity_threshold ?? 30}%` : null} />
+              thresholds={thresholds}
+              extra={hum !== null ? `Soglia: ${settingsForm.humidity_threshold}%` : null} />
             <SensorCard icon={Beaker} title="Livello pH" value={ph} unit="" statusType="ph"
-              extra={ph !== null ? `Range ottimale: 6.0 - 8.0` : null} />
+              extra={ph !== null ? `Range ottimale: 6.0 - 7.5` : null} />
           </div>
         </FadeIn>
 
@@ -545,14 +918,12 @@ export default function GestioneDispositivo() {
         {/* ── Grid Controlli ──────────────────────────────────────────────── */}
         <FadeIn>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '36px' }}>
+            <PumpIrrigateCard deviceId={deviceId} deviceIp={deviceIp} pumpDuration={pumpDuration} disabled={!deviceIp || !isOnline} />
             <ControlToggle icon={Bell} iconOff={BellOff} title="Buzzer" value={buzzer}
-              onChange={(v) => sendCommand('buzzer', v)} disabled={!deviceIp || sendingCmd.buzzer}
+              onChange={(v) => sendCommand('buzzer', v)} disabled={!deviceIp || sendingCmd.buzzer || !isOnline}
               color="#d97706" />
-            <ControlToggle icon={Power} iconOff={Power} title="Pompa Acqua" value={pump}
-              onChange={(v) => sendCommand('pump', v)} disabled={!deviceIp || sendingCmd.pump}
-              color="#3b82f6" />
             <ControlToggle icon={Monitor} iconOff={Monitor} title="Monitor TFT" value={monitorOn}
-              onChange={(v) => sendCommand('monitor', v)} disabled={!deviceIp || sendingCmd.monitor}
+              onChange={(v) => sendCommand('monitor', v)} disabled={!deviceIp || sendingCmd.monitor || !isOnline}
               color="#7c3aed" />
             <ButtonIndicator isPressed={buttonPressed} />
           </div>
@@ -592,10 +963,11 @@ export default function GestioneDispositivo() {
                 {[
                   { label: 'Nome Dispositivo', value: device?.name },
                   { label: 'Soglia Umidità', value: `${device?.settings?.humidity_threshold ?? 30}%` },
-                  { label: 'Allerta Temperatura', value: `${device?.settings?.temperature_alert ?? 35}°C` },
-                  { label: 'Irrigazione Auto', value: device?.settings?.auto_water ? 'Attiva' : 'Disattiva' },
-                  { label: 'Città / Posizione', value: device?.settings?.city || '—' },
-                  { label: 'Coordinate', value: device?.settings?.latitude ? `${device?.settings?.latitude}, ${device?.settings?.longitude}` : '—' },
+                  { label: 'Irrigazione Auto', value: device?.settings?.auto_water !== false ? 'Attiva' : 'Disattiva' },
+                  { label: 'Allarmi Sonori', value: device?.settings?.buzzer_alarms_enabled !== false ? 'Attivi' : 'Disattivati' },
+                  { label: 'Città / Posizione', value: liveData?.geo?.city || settingsForm.city || device?.settings?.city || '—' },
+                  { label: 'Coordinate', value: (liveData?.geo?.lat && liveData?.geo?.lon && liveData.geo.lat !== '0.000000') ? `${liveData.geo.lat}, ${liveData.geo.lon}` : (settingsForm.latitude ? `${settingsForm.latitude}, ${settingsForm.longitude}` : (device?.settings?.latitude ? `${device?.settings?.latitude}, ${device?.settings?.longitude}` : '—')) },
+                  { label: 'Spotify', value: settingsForm.spotify_refresh ? 'Configurato' : 'Non configurato' },
                 ].map(({ label, value }) => (
                   <div key={label}>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', fontWeight: '600', marginBottom: '4px' }}>{label}</div>
@@ -622,12 +994,6 @@ export default function GestioneDispositivo() {
                     onChange={e => setSettingsForm(f => ({ ...f, humidity_threshold: e.target.value }))}
                     style={inputStyle} />
                 </div>
-                <div>
-                  <label style={labelStyle}>Allerta Temperatura (°C)</label>
-                  <input type="number" min="-20" max="60" value={settingsForm.temperature_alert}
-                    onChange={e => setSettingsForm(f => ({ ...f, temperature_alert: e.target.value }))}
-                    style={inputStyle} />
-                </div>
 
                 {/* Irrigazione auto */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '12px', background: 'var(--bg-alt)' }}>
@@ -638,12 +1004,32 @@ export default function GestioneDispositivo() {
                   <button onClick={() => setSettingsForm(f => ({ ...f, auto_water: !f.auto_water }))}
                     style={{
                       width: '52px', height: '28px', borderRadius: '14px', border: 'none', flexShrink: 0,
-                      background: settingsForm.auto_water ? 'var(--accent-green)' : 'var(--bg-alt)', cursor: 'pointer',
+                      background: settingsForm.auto_water ? 'var(--accent-green)' : '#cbd5e1', cursor: 'pointer',
                       position: 'relative', transition: 'background 0.3s',
                     }}>
                     <div style={{
                       width: '22px', height: '22px', borderRadius: '50%', background: 'white',
                       position: 'absolute', top: '3px', left: settingsForm.auto_water ? '27px' : '3px',
+                      transition: 'left 0.3s', boxShadow: '0 1px 4px rgba(0,0,0,0.2)'
+                    }} />
+                  </button>
+                </div>
+
+                {/* Allarmi sonori */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 16px', border: '1px solid var(--border-color)', borderRadius: '12px', background: 'var(--bg-alt)' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={labelStyle}>Allarmi Sonori (Buzzer)</div>
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Suoni di allerta per sensori</div>
+                  </div>
+                  <button onClick={() => setSettingsForm(f => ({ ...f, buzzer_alarms_enabled: !f.buzzer_alarms_enabled }))}
+                    style={{
+                      width: '52px', height: '28px', borderRadius: '14px', border: 'none', flexShrink: 0,
+                      background: settingsForm.buzzer_alarms_enabled ? '#d97706' : '#cbd5e1', cursor: 'pointer',
+                      position: 'relative', transition: 'background 0.3s',
+                    }}>
+                    <div style={{
+                      width: '22px', height: '22px', borderRadius: '50%', background: 'white',
+                      position: 'absolute', top: '3px', left: settingsForm.buzzer_alarms_enabled ? '27px' : '3px',
                       transition: 'left 0.3s', boxShadow: '0 1px 4px rgba(0,0,0,0.2)'
                     }} />
                   </button>
@@ -728,6 +1114,67 @@ export default function GestioneDispositivo() {
                   )}
                 </div>
 
+                {/* ─── Configurazione API ──────────────────────────────── */}
+                <div style={{ gridColumn: '1 / -1', marginTop: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                    <label style={{ ...labelStyle, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                      <Zap size={16} color="var(--accent-green)" /> Configurazione API Esterne
+                    </label>
+                    <button onClick={handleTestApi} disabled={testingApi} 
+                      style={{ fontSize: '0.75rem', color: 'var(--accent-green)', background: 'transparent', border: 'none', cursor: 'pointer', fontWeight: '700', textDecoration: 'underline' }}>
+                      {testingApi ? 'Verifica in corso...' : 'TESTA CONNESSIONI'}
+                    </button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '16px' }}>
+                    <div>
+                      <label style={labelStyle}>OpenWeather API Key</label>
+                      <input type="password" value={settingsForm.meteo_key}
+                        onChange={e => setSettingsForm(f => ({ ...f, meteo_key: e.target.value }))}
+                        style={inputStyle} placeholder="Chiave Meteo" />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>NewsAPI.org Key</label>
+                      <input type="password" value={settingsForm.news_key}
+                        onChange={e => setSettingsForm(f => ({ ...f, news_key: e.target.value }))}
+                        style={inputStyle} placeholder="Chiave News" />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Spotify Refresh Token</label>
+                      <input type="password" value={settingsForm.spotify_refresh}
+                        onChange={e => setSettingsForm(f => ({ ...f, spotify_refresh: e.target.value }))}
+                        style={inputStyle} placeholder="Refresh Token" />
+                    </div>
+                    <div>
+                      <label style={labelStyle}>Spotify Credentials (B64)</label>
+                      <input type="password" value={settingsForm.spotify_creds}
+                        onChange={e => setSettingsForm(f => ({ ...f, spotify_creds: e.target.value }))}
+                        style={inputStyle} placeholder="Client ID:Secret Base64" />
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            )}
+            
+            {/* ─── Zona Pericolo (Elimina) ─────────────────────────── */}
+            {editingSettings && (
+              <div style={{ marginTop: '30px', paddingTop: '20px', borderTop: '1px solid var(--border-color)' }}>
+                <h3 style={{ fontSize: '1rem', color: '#e53e3e', marginBottom: '8px' }}>Zona Pericolo</h3>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
+                  Rimuovendo questo dispositivo perderai tutti i dati associati e non sarà più gestibile dal tuo account.
+                </p>
+                <button
+                  onClick={handleDeleteDevice}
+                  disabled={isDeleting}
+                  style={{
+                    padding: '8px 18px', fontSize: '0.85rem', border: '1px solid #e53e3e',
+                    borderRadius: '10px', background: '#fef2f2', color: '#e53e3e', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: '6px', fontWeight: '600'
+                  }}
+                >
+                  {isDeleting ? <Loader2 size={16} style={{ animation: 'spin 1.5s linear infinite' }} /> : <AlertTriangle size={16} />}
+                  {isDeleting ? 'Rimozione...' : 'Rimuovi Dispositivo'}
+                </button>
               </div>
             )}
           </div>

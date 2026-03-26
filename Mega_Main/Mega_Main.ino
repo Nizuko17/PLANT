@@ -19,6 +19,9 @@
 
 #include <DHT.h>
 #include <ArduinoJson.h>
+#include <Adafruit_GFX.h>
+#include <ILI9488.h>
+#include <SPI.h>
 #ifdef __AVR__
   #include <avr/wdt.h>
 #endif
@@ -28,8 +31,14 @@
 #define DHT_TYPE        DHT11
 #define BTN_PIN         7
 #define BUZZER_PIN      8
-#define PUMP_PIN        9
-#define MONITOR_PIN     10
+// #define PUMP_PIN     9   // DISATTIVATO - Pin usato da TFT_RST
+// #define MONITOR_PIN  10  // DISATTIVATO - Pin usato da TFT_DC
+
+// ── Pin Display TFT (ILI9341) ────────────────────────────────────
+#define TFT_CS          53
+#define TFT_DC          10
+#define TFT_RST         9
+// Nota: SDI(MOSI) su 51, SCK su 52 (Hardware SPI Mega)
 
 #define PH_PIN          A2
 
@@ -81,8 +90,28 @@ uint8_t debugLevel = DBG_WARN; // Default silenzioso per i test (livello 2)
 
 // ── Oggetti ──────────────────────────────────────────────────────
 DHT dht(DHT_PIN, DHT_TYPE);
+ILI9488 tft(TFT_CS, TFT_DC, TFT_RST);
 
-// ── Stato sensori ────────────────────────────────────────────────
+// Definizioni Colori Standard (per compatibilità librerie diverse)
+#define COLOR_BLACK       0x0000
+#define COLOR_NAVY        0x000F
+#define COLOR_DARKGREEN   0x03E0
+#define COLOR_DARKCYAN    0x03EF
+#define COLOR_MAROON      0x7800
+#define COLOR_PURPLE      0x780F
+#define COLOR_OLIVE       0x7BE0
+#define COLOR_LIGHTGREY   0xC618
+#define COLOR_DARKGREY    0x7BEF
+#define COLOR_BLUE        0x001F
+#define COLOR_GREEN       0x07E0
+#define COLOR_CYAN        0x07FF
+#define COLOR_RED         0xF800
+#define COLOR_MAGENTA     0xF81F
+#define COLOR_YELLOW      0xFFE0
+#define COLOR_WHITE       0xFFFF
+#define COLOR_ORANGE      0xFD20
+#define COLOR_GREENYELLOW 0xAFE5
+#define COLOR_PINK        0xF81F
 float  temperature    = 0.0f;
 float  humidity       = 0.0f;
 float  phValue        = 7.0f;
@@ -103,7 +132,7 @@ int    buzzerFreq     = 0;
 unsigned long buzzerEndMs = 0;
 bool   pumpOn         = false;
 int    pumpSpeed      = 0;
-bool   monitorOn      = false;
+bool   monitorOn      = true; // Monitor virtuale (display) sempre ON
 bool   btnPressed     = false;
 bool   btnPrevState   = false;
 unsigned long pumpLastOn = 0;
@@ -132,6 +161,7 @@ String geoCity   = "";
 // ── Timer ────────────────────────────────────────────────────────
 unsigned long lastSensorMs     = 0;
 unsigned long lastSendMs       = 0;
+unsigned long lastDisplayMs    = 0;
 unsigned long lastSecMs        = 0;
 unsigned long lastHeartbeatMs  = 0;
 uint8_t dataCycle              = 0;
@@ -163,14 +193,39 @@ void setup() {
 
   // Pin modes
   pinMode(BUZZER_PIN,    OUTPUT);
-  pinMode(PUMP_PIN,      OUTPUT);
-  pinMode(MONITOR_PIN,   OUTPUT);
+  // pinMode(PUMP_PIN,   OUTPUT); // DISATTIVATO
+  // pinMode(MONITOR_PIN, OUTPUT); // DISATTIVATO
   pinMode(BTN_PIN,       INPUT_PULLUP);
+
+  // ── Inizializzazione Hardware Display ──
+  pinMode(TFT_CS,  OUTPUT);
+  pinMode(TFT_DC,  OUTPUT);
+  pinMode(TFT_RST, OUTPUT);
+  pinMode(53,      OUTPUT); // Pin SS hardware (Obbligatorio OUTPUT per SPI Master su Mega)
+  
+  // Reset hardware manuale
+  digitalWrite(TFT_RST, HIGH); delay(10);
+  digitalWrite(TFT_RST, LOW);  delay(20);
+  digitalWrite(TFT_RST, HIGH); delay(150);
+
+  digitalWrite(TFT_CS, HIGH); // Inizia con CS disattivato
+  
+  SPI.begin();
+  delay(100);
 
   // Stato iniziale sicuro
   digitalWrite(BUZZER_PIN,    LOW);
-  analogWrite(PUMP_PIN,       0);
-  digitalWrite(MONITOR_PIN,   LOW);
+  // analogWrite(PUMP_PIN,    0);   // DISATTIVATO
+  // digitalWrite(MONITOR_PIN, LOW); // DISATTIVATO
+
+  // ── Inizializzazione Logica Display TFT ──
+  tft.begin();
+  SPI.setClockDivider(SPI_CLOCK_DIV8); // Rallenta SPI (~2MHz) per stabilità su breadboard
+  delay(200);
+  tft.setRotation(1); // Orizzontale (480x320)
+  tft.fillScreen(COLOR_BLACK);
+  delay(100);
+  disegnaInterfacciaStatica();
 
   // Riserva spazio buffer per evitare riallocazioni
   serial1Buf.reserve(SERIAL1_BUF_MAX);
@@ -182,9 +237,9 @@ void setup() {
   Serial.println(F("║  PLANT v3.0.0 — Arduino Mega 2560     ║"));
   Serial.println(F("╠═══════════════════════════════════════╣"));
   Serial.println(F("║  DHT11:   pin 2   │ pH:     pin A2    ║"));
-  Serial.println(F("║  Buzzer:  pin 8   │ Pompa:  pin 9     ║"));
-  Serial.println(F("║  Btn:     pin 7   │ TFT:    pin 10    ║"));
-  Serial.println(F("║                   │ Serial1: 115200   ║"));
+  Serial.println(F("║  Buzzer:  pin 8   │ TFT CS: pin 53    ║"));
+  Serial.println(F("║  Btn:     pin 7   │ TFT DC: pin 10    ║"));
+  Serial.println(F("║  TFT RST: pin 9   │ Serial1: 115200   ║"));
   Serial.println(F("╠═══════════════════════════════════════╣"));
   Serial.println(F("║  Comandi: status | pump on/off        ║"));
   Serial.println(F("║           buzzer <freq> <ms>          ║"));
@@ -230,6 +285,7 @@ void loop() {
     pumpOn    = false;
     pumpEndMs = 0;
     applicaPompa();
+    aggiornaDisplay();
     LOG_I(F("Pompa auto-stop"));
   }
 
@@ -269,6 +325,8 @@ void loop() {
 
   // Timeout buffer parziali
   controllaTimeoutBuffer(now);
+
+  // (Display aggiornato in modo event-driven, nessun polling)
 }
 
 // =================================================================
@@ -448,6 +506,7 @@ void leggiPulsante() {
       if (stato) {
         pumpOn = !pumpOn;
         applicaPompa();
+        aggiornaDisplay();
         LOG_I(pumpOn ? F("BTN -> Pompa ON") : F("BTN -> Pompa OFF"));
       }
     }
@@ -460,11 +519,11 @@ void leggiPulsante() {
 void applicaPompa() {
   if (pumpOn) {
     pumpLastOn = millis();
-    int pwm = map(max(pumpSpeed, 30), 0, 100, 0, 255);
-    analogWrite(PUMP_PIN, pwm);
+    // int pwm = map(max(pumpSpeed, 30), 0, 100, 0, 255);
+    // analogWrite(PUMP_PIN, pwm); // DISATTIVATO
     beepPompaOn();
   } else {
-    analogWrite(PUMP_PIN, 0);
+    // analogWrite(PUMP_PIN, 0);   // DISATTIVATO
     beepPompaOff();
   }
 }
@@ -732,7 +791,7 @@ void gestisciComandoTerminale(String cmdOriginal) {
         pumpSpeed = (int)vNum;
         if (pumpOn) applicaPompa();
       } else if (propL == "pump" || propL == "pompa") {
-        pumpOn = isOn; applicaPompa();
+        pumpOn = isOn; applicaPompa(); aggiornaDisplay();
       } else if (propL == "buzzer_freq") {
         buzzerFreq = (int)vNum;
         if (buzzerOn) tone(BUZZER_PIN, buzzerFreq);
@@ -740,7 +799,8 @@ void gestisciComandoTerminale(String cmdOriginal) {
         if (isOff) { noTone(BUZZER_PIN); buzzerOn = false; }
         else { buzzerOn = true; if (vNum > 0) buzzerFreq = (int)vNum; tone(BUZZER_PIN, buzzerFreq); }
       } else if (propL == "monitor") {
-        monitorOn = isOn; digitalWrite(MONITOR_PIN, monitorOn ? HIGH : LOW);
+        monitorOn = isOn; 
+        // digitalWrite(MONITOR_PIN, monitorOn ? HIGH : LOW); // DISATTIVATO
       } else if (propL == "debug" || propL == "log") {
         debugLevel = (uint8_t)vNum;
       } else {
@@ -929,11 +989,13 @@ void gestisciComandoTerminale(String cmdOriginal) {
     } else if (arg == "on") {
       pumpOn = true;
       applicaPompa();
+      aggiornaDisplay();
       Serial.println(F("Pompa ON"));
     } else if (arg == "off") {
       pumpOn = false;
       pumpEndMs = 0;
       applicaPompa();
+      aggiornaDisplay();
       Serial.println(F("Pompa OFF"));
     } else if (arg.startsWith("duration")) {
       int dur = arg.substring(8).toInt();
@@ -941,6 +1003,7 @@ void gestisciComandoTerminale(String cmdOriginal) {
         pumpEndMs = millis() + (dur * 1000UL);
         pumpOn = true;
         applicaPompa();
+        aggiornaDisplay();
         Serial.print(F("Pompa temporizzata: ")); Serial.print(dur); Serial.println(F("s"));
       } else {
         Serial.println(F("Uso: pump duration <secondi>"));
@@ -949,7 +1012,7 @@ void gestisciComandoTerminale(String cmdOriginal) {
       int spd = arg.toInt();
       if (spd >= 0 && spd <= 100) {
         pumpSpeed = spd;
-        if (pumpOn) analogWrite(PUMP_PIN, map(pumpSpeed, 0, 100, 0, 255));
+        // if (pumpOn) analogWrite(PUMP_PIN, map(pumpSpeed, 0, 100, 0, 255)); // DISATTIVATO
         Serial.print(F("Pompa velocità: ")); Serial.println(pumpSpeed);
       } else {
         Serial.println(F("Uso: pump on | pump off | pump <0-100> | pump duration <sec>"));
@@ -1020,9 +1083,15 @@ void gestisciComandoTerminale(String cmdOriginal) {
     if (arg == "") {
       Serial.println(F("── STATO MONITOR ──"));
       Serial.print(F("  Stato:      ")); Serial.println(monitorOn ? F("ON") : F("OFF"));
-    } else if (arg == "on")  { monitorOn = true;  digitalWrite(MONITOR_PIN, HIGH); Serial.println(F("Monitor ON")); }
-    else if (arg == "off") { monitorOn = false; digitalWrite(MONITOR_PIN, LOW);  Serial.println(F("Monitor OFF")); }
-    else Serial.println(F("Uso: monitor on | monitor off"));
+    } else if (arg == "on")  { 
+      monitorOn = true;  
+      // digitalWrite(MONITOR_PIN, HIGH); // DISATTIVATO
+      Serial.println(F("Monitor ON")); 
+    } else if (arg == "off") { 
+      monitorOn = false; 
+      // digitalWrite(MONITOR_PIN, LOW);  // DISATTIVATO
+      Serial.println(F("Monitor OFF")); 
+    } else Serial.println(F("Uso: monitor on | monitor off"));
     return;
   }
 
@@ -1268,11 +1337,12 @@ void gestisciComandoJSON(String raw) {
         pumpEndMs = 0;
       }
       applicaPompa();
+      aggiornaDisplay();
       LOG_I(String(F("Pompa: ")) + (pumpOn ? "ON" : "OFF") + " vel:" + pumpSpeed);
     }
     else if (strcmp(target, "monitor") == 0) {
       monitorOn = doc[F("value")] | false;
-      digitalWrite(MONITOR_PIN, monitorOn ? HIGH : LOW);
+      // digitalWrite(MONITOR_PIN, monitorOn ? HIGH : LOW); // DISATTIVATO
       LOG_I(String(F("Monitor: ")) + (monitorOn ? "ON" : "OFF"));
     }
     else if (strcmp(target, "datetime") == 0) {
@@ -1314,6 +1384,7 @@ void gestisciComandoJSON(String raw) {
     if (strcmp(msg, "CONNECTED") == 0) {
       if (doc.containsKey(F("ip"))) wifiIP = doc[F("ip")].as<String>();
       if (doc.containsKey(F("ssid"))) wifiSSID = doc[F("ssid")].as<String>();
+      aggiornaDisplay();
     }
     LOG_I(String(F("NodeMCU status: ")) + msg);
   }
@@ -1334,4 +1405,86 @@ void inviaACK(const char* target, bool ok) {
   String ackStr;
   serializeJson(ack, ackStr);
   Serial1.println(ackStr);
+}
+
+// =================================================================
+//  DISPLAY UI (ILI9488 - KMRTM35018-SPI 480x320)
+// =================================================================
+
+// Cache per evitare ridisegni inutili
+static String prevIP      = "";
+static bool   prevPumpOn  = false;
+static int    prevPumpSpd = -1;
+
+void disegnaInterfacciaStatica() {
+  tft.fillScreen(COLOR_BLACK);
+  
+  // Header
+  tft.fillRect(0, 0, 480, 40, COLOR_NAVY);
+  tft.setCursor(20, 12);
+  tft.setTextColor(COLOR_WHITE, COLOR_NAVY);
+  tft.setTextSize(2);
+  tft.print(F("PLANT SYSTEM"));
+
+  // Etichetta Network
+  tft.drawFastHLine(0, 55, 480, COLOR_DARKGREY);
+  tft.setCursor(15, 65);
+  tft.setTextColor(COLOR_LIGHTGREY, COLOR_BLACK);
+  tft.setTextSize(1);
+  tft.print(F("NETWORK:"));
+  
+  // Etichetta Pump
+  tft.drawFastHLine(0, 155, 480, COLOR_DARKGREY);
+  tft.setCursor(15, 165);
+  tft.setTextColor(COLOR_LIGHTGREY, COLOR_BLACK);
+  tft.setTextSize(1);
+  tft.print(F("PUMP STATUS:"));
+
+  // Reset cache per forzare primo disegno
+  prevIP   = "__init__";
+  prevPumpSpd = -1;
+}
+
+void aggiornaDisplay() {
+  // 1. WiFi / IP (solo se cambiato)
+  String curIP = (wifiIP != "0.0.0.0" && wifiIP != "") ? wifiIP : "";
+  if (curIP != prevIP) {
+    prevIP = curIP;
+    tft.fillRect(15, 80, 450, 65, COLOR_BLACK);
+    tft.setCursor(15, 85);
+    if (curIP.length() > 0) {
+      tft.setTextColor(COLOR_GREEN, COLOR_BLACK);
+      tft.setTextSize(2);
+      tft.print(F("ONLINE"));
+      tft.setCursor(15, 115);
+      tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
+      tft.print(curIP);
+    } else {
+      tft.setTextColor(COLOR_RED, COLOR_BLACK);
+      tft.setTextSize(2);
+      tft.print(F("OFFLINE"));
+      tft.setCursor(15, 115);
+      tft.setTextColor(COLOR_LIGHTGREY, COLOR_BLACK);
+      tft.setTextSize(1);
+      tft.print(F("In attesa del NodeMCU..."));
+    }
+  }
+
+  // 2. Pompa (solo se cambiato)
+  if (pumpOn != prevPumpOn || pumpSpeed != prevPumpSpd) {
+    prevPumpOn  = pumpOn;
+    prevPumpSpd = pumpSpeed;
+    tft.fillRect(15, 180, 450, 30, COLOR_BLACK);
+    tft.setCursor(15, 185);
+    tft.setTextSize(2);
+    if (pumpOn) {
+      tft.setTextColor(COLOR_YELLOW, COLOR_BLACK);
+      tft.print(F("RUNNING ("));
+      tft.print(pumpSpeed);
+      tft.print(F("%)"));
+    } else {
+      tft.setTextColor(COLOR_CYAN, COLOR_BLACK);
+      tft.print(F("OFF / IDLE"));
+    }
+  }
 }
